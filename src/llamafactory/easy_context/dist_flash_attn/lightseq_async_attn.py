@@ -299,6 +299,7 @@ def _lightseq_forward(q, k, v, causal, sm_scale, comm_mode):
             # if seq_rank == 0:
             #    print("Immediate wait for abalation")
             wait_async_handles(reqs)
+        t=time.time()
         if is_compute_for_local_query(time_step):
             # print(f"t={time_step}: (Comp) R={seq_rank} local compute")
             if time_step == 0:
@@ -317,10 +318,15 @@ def _lightseq_forward(q, k, v, causal, sm_scale, comm_mode):
 
             #print(f"rank 3 q is: {peer_q[buffer_idx_2]}")
             fwd_launch_helper(peer_q[buffer_idx_2], maybe_repeat_kv_fwd(q.shape[1], k), maybe_repeat_kv_fwd(q.shape[1], v), peer_m[buffer_idx_2], peer_l[buffer_idx_2], peer_o[buffer_idx_2], None, False, False)
-
+        t1=time.time()
+        if int(os.getenv('RANK'))==0:
+            print(f"kernel_time: {t1-t}, step={time_step}")
         if comm_mode == "lightseq":
             # Make sure tensors for next steps are ready
             wait_async_handles(reqs)
+        t2=time.time()
+        if int(os.getenv('RANK'))==0:
+            print(f"comm_time: {t2-t1}, step={time_step}")
         # sync between statistics get from other ranks and the local ones
         if is_sync_from_remote(time_step):
             _rescale_kernel[grid](
@@ -337,6 +343,9 @@ def _lightseq_forward(q, k, v, causal, sm_scale, comm_mode):
                 LAST_STEP=is_last_time(time_step),
                 num_warps=num_warps,
                 num_stages=4)
+        t3=time.time()
+        if int(os.getenv('RANK'))==0:
+            print(f"comm_time: {t3-t2}, step={time_step}")
     return q, k, v, o, L
 
 def _lightseq_backward(do, q, k, v, o, L, sm_scale, comm_mode, backward_engine):

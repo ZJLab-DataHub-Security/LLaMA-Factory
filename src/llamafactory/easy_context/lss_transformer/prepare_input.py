@@ -4,8 +4,8 @@ def extract_local(value, rank, world_size, device, dim=1):
         return value_local
     return value_local.to(device)
 
-# 感觉和lss类似，拆分输入的部分数据
-def prepare_dist_flash_attn_inputs(
+
+def prepare_lss_flash_attn_inputs(
     input_ids, position_ids, target_ids, rank, world_size, device
 ):
     local_input_ids = extract_local(
@@ -35,7 +35,7 @@ def prepare_dist_flash_attn_inputs(
         "local_target_ids": local_target_ids,
     }
     
-def prepare_dist_flash_attn_sft_inputs(
+def prepare_lss_flash_attn_sft_inputs(
     input_ids, attention_mask, position_ids, labels, rank, world_size, device
 ):
     local_input_ids = extract_local(
@@ -44,18 +44,27 @@ def prepare_dist_flash_attn_sft_inputs(
         world_size,
         device,
     )
-    local_position_ids = extract_local(
-        position_ids,
-        rank,
-        world_size,
-        device,
-    )
-    local_attention_mask = extract_local(
-        attention_mask,
-        rank,
-        world_size,
-        device
-    )
+    # local_position_ids = extract_local(
+    #     position_ids,
+    #     rank,
+    #     world_size,
+    #     device,
+    # )
+    local_position_ids = position_ids 
+    # for lss transformer
+    # because the rotary position embedding of Llama is behind the computation of Q_i, K 
+    
+    # local_attention_mask = extract_local(
+    #     attention_mask,
+    #     rank,
+    #     world_size,
+    #     device
+    # )
+
+    local_attention_mask = attention_mask
+    # for lss transformer
+    
+
     local_labels = extract_local(
         labels,
         rank,

@@ -16,7 +16,7 @@ from .trainer import CustomSeq2SeqTrainer, CustomSeqParallelTrainer
 
 import torch
 import os
-from ...easy_context import apply_seq_parallel_monkey_patch
+from ...easy_context import apply_seq_parallel_monkey_patch # 使用easy context
 
 
 if TYPE_CHECKING:
@@ -38,6 +38,7 @@ def run_sft(
     dataset = get_dataset(model_args, data_args, training_args, stage="sft", **tokenizer_module)
     model = load_model(tokenizer, model_args, finetuning_args, training_args.do_train)
     apply_seq_parallel_monkey_patch(finetuning_args.parallel_mode, "llama", sp_size=finetuning_args.sp_size)
+    # 添加序列并行优化方式
 
     if training_args.predict_with_generate:
         tokenizer.padding_side = "left"  # use left-padding in generation

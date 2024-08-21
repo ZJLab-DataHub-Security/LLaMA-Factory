@@ -169,9 +169,13 @@ class CheckpointFunctionEndWithFlashAttention(torch.autograd.Function):
                 if ctx.had_cuda_in_fwd:
                     set_device_states(ctx.fwd_gpu_devices, ctx.fwd_gpu_states)
             detached_inputs = detach_variable(tuple(inputs))
+            # with torch.enable_grad(), \
+            #      torch.cuda.amp.autocast(**ctx.gpu_autocast_kwargs), \
+            #      torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):
             with torch.enable_grad(), \
-                 torch.cuda.amp.autocast(**ctx.gpu_autocast_kwargs), \
-                 torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):
+                    torch.amp.autocast('cuda',**ctx.gpu_autocast_kwargs) ,\
+                    torch.amp.autocast('cpu', **ctx.cpu_autocast_kwargs):
+                
                 # Stop recomputation before flash attention
                 # It is unecessary to run recomputation for flash attn
                 q, k, v, residual = ctx.run_function(*detached_inputs)
@@ -294,9 +298,13 @@ class CheckpointFunctionLastModule(torch.autograd.Function):
                 if ctx.had_cuda_in_fwd:
                     set_device_states(ctx.fwd_gpu_devices, ctx.fwd_gpu_states)
             detached_inputs = detach_variable(tuple(inputs))
+            # with torch.enable_grad(), \
+            #      torch.cuda.amp.autocast(**ctx.gpu_autocast_kwargs), \
+            #      torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):
+
             with torch.enable_grad(), \
-                 torch.cuda.amp.autocast(**ctx.gpu_autocast_kwargs), \
-                 torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):
+                torch.amp.autocast('cuda',**ctx.gpu_autocast_kwargs) ,\
+                torch.amp.autocast('cpu', **ctx.cpu_autocast_kwargs):
                 outputs = ctx.run_function(*detached_inputs)
 
         if isinstance(outputs, torch.Tensor):
@@ -604,5 +612,7 @@ def forward(
 
 def apply_dist_flash_attn_monkey_patch_llama(sp_size=None):
     initialize_distributed(sp_size=sp_size)
+    # 更新LlamaModel的forward函数
     transformers.models.llama.modeling_llama.LlamaModel.forward = forward
+    # 更新LlamaDecoderLayer的forward函数，LlamaDecoderLayer是LLamaModel的子layer
     transformers.models.llama.modeling_llama.LlamaDecoderLayer.forward = llama_layer_forward

@@ -13,6 +13,7 @@ from .async_communication import (is_last_time, is_compute_for_local_query, is_s
 from .prepare_input import extract_local
 import torch.distributed as dist
 import sys 
+from .pydf import all_gather # reference: torch/distributed/nn/functional.py
 
 logger = logging.get_logger(__name__)
 
@@ -44,72 +45,53 @@ def lss_layer_forward(
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.45
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-        """
-        Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`, *optional*):
-                attention mask of size `(batch_size, sequence_length)` if flash attention is used or `(batch_size, 1,
-                query_sequence_length, key_sequence_length)` if default attention is used.
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            use_cache (`bool`, *optional*):
-                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-                (see `past_key_values`).
-            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
-            cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
-                Indices depicting the position of the input sequence tokens in the sequence
-            position_embeddings (`Tuple[torch.FloatTensor, torch.FloatTensor]`, *optional*):
-                Tuple containing the cosine and sine positional embeddings of shape `(batch_size, seq_len, head_dim)`,
-                with `head_dim` being the embedding dimension of each attention head.
-            kwargs (`dict`, *optional*):
-                Arbitrary kwargs to be ignored, used for FSDP and other methods that injects code
-                into the model
-        """
+
         assert output_attentions is False, "no support output attention Now"
+    
         seq_rank = dist.get_rank()
         seq_world_size = dist.get_world_size()
-        # print(f"R={seq_rank}, x_i={hidden_states}, Will All Gather")
         
+        # 只在 rank 0 的进程上打印参数形状
+        if seq_rank == 0:
+            print("LSS Layer Forward函数参数 (仅在 rank 0 上显示):")
+            print(f"hidden_states shape: {hidden_states.shape}")
+            print(f"attention_mask shape: {attention_mask.shape if attention_mask is not None else None}")
+            print(f"position_ids shape: {position_ids.shape if position_ids is not None else None}")
+            print(f"past_key_value: {type(past_key_value)}")
+            print(f"output_attentions: {output_attentions}")
+            print(f"use_cache: {use_cache}")
+            print(f"cache_position shape: {cache_position.shape if cache_position is not None else None}")
+            print(f"position_embeddings: {type(position_embeddings)}")
+
         # hidden_states(x_i) has been scattered 
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
 
-        # Gather x_i , compute fully K and V , todo: add process_group
-        # [b,s/N,h]
-        all_hidden_states_list = [torch.zeros_like(hidden_states) for _ in range(seq_world_size)]
-        dist.all_gather(all_hidden_states_list,hidden_states)
+        # Gather x_i , compute fully K and V, todo: add process_group
+        # dist.all_gather(all_hidden_states_list,hidden_states)
+        all_hidden_states = all_gather(hidden_states)
         # N * [b,s/N,h] -> [b,s,h]
-        all_hidden_states = torch.cat(all_hidden_states_list, dim=1) 
+        all_hidden_states = torch.cat(all_hidden_states, dim=1) 
 
+        if seq_world_size == 1:
+            assert torch.allclose(all_hidden_states, hidden_states)
         bsz, q_len, h = all_hidden_states.size()
         _, q_i_len,_ = hidden_states.size()
         # flash attn, Q_i and fully K, V
-        try:
-            query_states = self.self_attn.q_proj(hidden_states).view(bsz, q_i_len, self.self_attn.num_heads, self.self_attn.head_dim).transpose(1, 2)
-            key_states = self.self_attn.k_proj(all_hidden_states).view(bsz, q_len, self.self_attn.num_key_value_heads, self.self_attn.head_dim).transpose(1, 2)
-            value_states = self.self_attn.v_proj(all_hidden_states).view(bsz, q_len, self.self_attn.num_key_value_heads, self.self_attn.head_dim).transpose(1, 2)
-        except:
-            # old transformers versions don't support num_key_value_heads
-            query_states = self.self_attn.q_proj(hidden_states).view(bsz, q_i_len, self.self_attn.num_heads, self.self_attn.head_dim).transpose(1, 2)
-            key_states = self.self_attn.k_proj(all_hidden_states).view(bsz, q_len, self.self_attn.num_heads, self.self_attn.head_dim).transpose(1, 2)
-            value_states = self.self_attn.v_proj(all_hidden_states).view(bsz, q_len, self.self_attn.num_heads, self.self_attn.head_dim).transpose(1, 2)  
 
-        # if seq_rank == 0:
-        #     print(f"q shape is {query_states.shape}, k shape is {key_states.shape}, v shape is {value_states.shape}")
+        query_states = self.self_attn.q_proj(hidden_states).view(bsz, q_i_len, self.self_attn.num_heads, self.self_attn.head_dim).transpose(1, 2)
+        key_states = self.self_attn.k_proj(all_hidden_states).view(bsz, q_len, self.self_attn.num_key_value_heads, self.self_attn.head_dim).transpose(1, 2)
+        value_states = self.self_attn.v_proj(all_hidden_states).view(bsz, q_len, self.self_attn.num_key_value_heads, self.self_attn.head_dim).transpose(1, 2)
 
-        # modify following code with torch..nn.functional.scaled_dot_product_attention(), 
+        # modify following code with torch.nn.functional.scaled_dot_product_attention(), 
         # reference: modeling_llama.py/LlamaSdaAttention/forward func
 
-        position_ids_local = extract_local(position_ids, seq_rank, seq_world_size, query_states.device)
-        cos, sin = self.self_attn.rotary_emb(value_states, position_ids)
-        cos_q, sin_q = self.self_attn.rotary_emb(query_states, position_ids_local)
+        # position_ids_local = extract_local(position_ids, seq_rank, seq_world_size, query_states.device)
+        # cos, sin = self.self_attn.rotary_emb(value_states, position_ids)
+        # cos_q, sin_q = self.self_attn.rotary_emb(query_states, position_ids_local)
 
-        # if seq_rank == 0:
-        #     print(f"cos shape is {cos.shape}, sin shape is {sin.shape}")
-
-        query_states, key_states = cust_apply_rotary_pos_emb(query_states, key_states,cos_q, sin_q, cos, sin)
+        # query_states, key_states = cust_apply_rotary_pos_emb(query_states, key_states, cos_q, sin_q, cos, sin)
 
         assert past_key_value is None,  "past_key_value is not supported"         
 
@@ -127,9 +109,17 @@ def lss_layer_forward(
         
         is_causal = True if causal_mask is None and q_len > 1 else False
 
-        # if seq_rank == 0:
-        #     print(f"the shape of QKV is: Q:{query_states.shape}, K:{key_states.shape}, V:{value_states.shape}")
-        #     print(f"attn_mask shape is {causal_mask.shape} and type is {causal_mask.dtype}")
+        # 只在 rank 0 的进程上打印中间结果的形状
+        if seq_rank == 0:
+            print("\nLSS Layer 中间结果 (仅在 rank 0 上显示):")
+            print(f"all_hidden_states shape: {all_hidden_states.shape}")
+            print(f"query_states shape: {query_states.shape}")
+            print(f"key_states shape: {key_states.shape}")
+            print(f"value_states shape: {value_states.shape}")
+            print(f"causal_mask shape: {causal_mask.shape if causal_mask is not None else None}")
+            print(f"is_causal: {is_causal}")
+            print(f'is training: {self.training}')
+
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states,
             key_states,
@@ -138,28 +128,14 @@ def lss_layer_forward(
             dropout_p=self.self_attn.attention_dropout if self.training else 0.0,
             is_causal=is_causal,
         )
-
         attn_output = attn_output.transpose(1,2).contiguous()
         attn_output = attn_output.view(bsz, q_i_len, -1)
 
         attn_output = self.self_attn.o_proj(attn_output)
-
-        # return attn_output, None, past_key_value
+        if seq_rank == 0:
+            print(f"attn_output shape: {attn_output.shape}")
         hidden_states = attn_output
         present_key_value = past_key_value
-        # origin Self Attention
-        # hidden_states, self_attn_weights, present_key_value = self.self_attn(
-        #     hidden_states=hidden_states,
-        #     attention_mask=attention_mask,
-        #     position_ids=position_ids,
-        #     past_key_value=past_key_value,
-        #     output_attentions=output_attentions,
-        #     use_cache=use_cache,
-        #     cache_position=cache_position,
-        #     position_embeddings=position_embeddings,
-        #     **kwargs,
-        # )
-
 
         hidden_states = residual + hidden_states
 
@@ -193,6 +169,20 @@ def forward(
     '''
     lss的实现,reference: dist_flash_attn, modeling_llama.py/LlamaModel/forward(func)
     '''
+    # 只在 rank 0 的进程上打印参数形状
+    if dist.get_rank() == 0:
+        print("Forward函数参数 (仅在 rank 0 上显示):")
+        print(f"input_ids shape: {input_ids.shape if input_ids is not None else None}")
+        print(f"attention_mask shape: {attention_mask.shape if attention_mask is not None else None}")
+        print(f"position_ids shape: {position_ids.shape if position_ids is not None else None}")
+        print(f"past_key_values: {type(past_key_values)}")
+        print(f"inputs_embeds shape: {inputs_embeds.shape if inputs_embeds is not None else None}")
+        print(f"use_cache: {use_cache}")
+        print(f"output_attentions: {output_attentions}")
+        print(f"output_hidden_states: {output_hidden_states}")
+        print(f"return_dict: {return_dict}")
+        print(f"cache_position shape: {cache_position.shape if cache_position is not None else None}")
+
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states

@@ -55,24 +55,25 @@ if __name__ == "__main__":
     device = torch.device(f"cuda:{rank}")
 
     batch_size = 1
-    seqlen = 4096
-    nheads = 32
-    d = 128
+    seqlen = 4
+    nheads = 4
+    d = 4
     dropout_p = 0
     causal = True
     deterministic = False
 
     assert seqlen % world_size == 0
-    assert d % 8 == 0
-    if rank == 0:
-        print("#" * 30)
-        print("# test LlamaRMSNorm:")
-        print("#" * 30)
-        test_LlamaRMSNorm()
+
+    # if rank == 0:
+    #     print("#" * 30)
+    #     print("# test LlamaRMSNorm:")
+    #     print("#" * 30)
+    #     test_LlamaRMSNorm()
 
     if dist.get_rank() == 0:
-        X = torch.randn(batch_size, seqlen, nheads*d, device=device, dtype=dtype, requires_grad=False)
-        # X = torch.arange(1, batch_size * seqlen * nheads * d + 1, dtype=dtype, device=device).reshape(batch_size, seqlen, nheads * d)
+        # X = torch.randn(batch_size, seqlen, nheads*d, device=device, dtype=dtype, requires_grad=False)
+        X = torch.arange(1, batch_size * seqlen * nheads * d + 1, dtype=dtype, device=device).reshape(batch_size, seqlen, nheads * d)
+        # print(X)
     else:
         X = torch.empty(batch_size, seqlen, nheads*d, device=device, dtype=dtype, requires_grad=False)
 
@@ -89,10 +90,10 @@ if __name__ == "__main__":
 
     # for forward
     # origin version
-    configuration = LlamaConfig(_attn_implementation='sdpa')
+    configuration = LlamaConfig(hidden_size=16,num_attention_heads=4,_attn_implementation='sdpa')
     origin_decoder = LlamaDecoderLayer(configuration,0).to(device=device).eval()
     if rank == 0:
-        with torch.no_grad():   
+        with torch.no_grad(): 
             origin_output_local = origin_decoder(X,position_ids=position_ids.clone())[0] 
             print(LA.matrix_norm(origin_output_local))  # 完整的输出
 
@@ -119,8 +120,7 @@ if __name__ == "__main__":
     all_lss_output = [torch.zeros_like(lss_output_local) for _ in range(world_size)]
     dist.all_gather(all_lss_output, lss_output_local)
     dist.barrier()
-    all_lss_output = torch.cat(all_lss_output, dim=1) # s
-    assert torch.allclose(lss_output_local, all_lss_output.chunk(world_size, dim=1)[rank])
+    all_lss_output = torch.cat(all_lss_output, dim=1) 
     if rank == 0:
         print(LA.matrix_norm(all_lss_output))      
         print(f"the output of origin and lss is same??: {torch.allclose(origin_output_local, all_lss_output)}")

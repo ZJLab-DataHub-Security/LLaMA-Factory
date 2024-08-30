@@ -58,6 +58,7 @@ def lss_layer_forward(
 
         # Gather x_i , compute fully K and V, todo: add process_group
         # dist.all_gather(all_hidden_states_list,hidden_states)
+        # TODO: 异步all_gather
         all_hidden_states = all_gather(hidden_states)
         # N * [b,s/N,h] -> [b,s,h]
         all_hidden_states = torch.cat(all_hidden_states, dim=1) 
@@ -86,8 +87,9 @@ def lss_layer_forward(
         value_states = repeat_kv(value_states, self.self_attn.num_key_value_groups)
 
         causal_mask = attention_mask
-        assert attention_mask is None, "The result with \'attention_mask\' is not guaranteed"
+        # assert attention_mask is None, f"attn_mask type is {attention_mask.dtype}, The result with \'attention_mask\' is not guaranteed"
         if attention_mask is not None:
+            # TODO: 这里可能会影结果
             causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]    
 
         if query_states.device.type == "cuda" and causal_mask is not None:

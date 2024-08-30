@@ -60,7 +60,6 @@ def prepare_lss_flash_attn_sft_inputs(
     #     world_size,
     #     device
     # )
-
     local_attention_mask = attention_mask
     # for lss transformer
     

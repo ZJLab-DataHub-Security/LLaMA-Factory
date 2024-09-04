@@ -148,6 +148,7 @@ class CustomSeqParallelTrainer(CustomSeq2SeqTrainer):
             labels = inputs.pop("labels")
         else:
             labels = None
+        # 每个进程的输出
         outputs = model(**inputs)
         # Save past state if it exists
         # TODO: this needs to be fixed and made cleaner later.
@@ -193,6 +194,7 @@ class CustomSeqParallelTrainer(CustomSeq2SeqTrainer):
                     normalizer=valid_label_cnt_all[b].item()
                     loss[b]=loss_fn(shift_logits[b], shift_labels[b])/normalizer
                 loss = loss.mean()*sp_size
+
 
         return (loss, outputs) if return_outputs else loss
 

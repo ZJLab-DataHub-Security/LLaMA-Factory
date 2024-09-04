@@ -7,9 +7,7 @@ import transformers.models
 from transformers.models.llama.modeling_llama import BaseModelOutputWithPast, apply_rotary_pos_emb, repeat_kv
 from transformers.cache_utils import DynamicCache, Cache
 from transformers.utils import logging
-from .async_communication import (is_last_time, is_compute_for_local_query, is_sync_from_remote, is_idle, print_and_reset_comm_stats, 
-        launch_async_handles, wait_async_handles, maybe_send_recv_fwd_qkvo, maybe_send_recv_bwd_qkvo, maybe_send_recv_bwd_last_dkv, reset_global_memory_buffer,
-        maybe_get_set_global_memory_buffer, maybe_get_set_global_memory_buffer_bwd, initialize_distributed, get_sequence_parallel_size, get_sequence_parallel_rank)
+from .async_communication import initialize_distributed
 from .prepare_input import extract_local
 import torch.distributed as dist
 import sys 
@@ -176,8 +174,12 @@ def forward(
         )
         use_cache = False
 
+    print(f"inputs_embeds is: {inputs_embeds}" )
+
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
+
+    print(f"inputs_embeds is: {inputs_embeds}" )
 
     return_legacy_cache = False
     if (
@@ -214,7 +216,7 @@ def forward(
     all_self_attns = () if output_attentions else None
     next_decoder_cache = None
 
-    for decoder_layer in self.layers:
+    for layer_idx,decoder_layer in enumerate(self.layers):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
@@ -243,6 +245,9 @@ def forward(
             )
 
         hidden_states = layer_outputs[0]
+        print(f"{layer_idx}th decoder layer and, hidden_states is: {hidden_states}" )
+        if(layer_idx == 1):
+            sys.exit(0)
 
         if use_cache:
             next_decoder_cache = layer_outputs[2 if output_attentions else 1]

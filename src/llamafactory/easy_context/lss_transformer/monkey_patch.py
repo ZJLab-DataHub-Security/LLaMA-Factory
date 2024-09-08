@@ -12,7 +12,7 @@ from .prepare_input import extract_local
 import torch.distributed as dist
 import sys 
 from .pydf import all_gather # reference: torch/distributed/nn/functional.py
-
+from flash_attn import flash_attn_func
 logger = logging.get_logger(__name__)
 
 
@@ -48,7 +48,6 @@ def lss_layer_forward(
     
         seq_rank = dist.get_rank()
         seq_world_size = dist.get_world_size()
-        
         # hidden_states(x_i) has been scattered 
         residual = hidden_states
 
@@ -61,16 +60,16 @@ def lss_layer_forward(
         # N * [b,s/N,h] -> [b,s,h]
         all_hidden_states = torch.cat(all_hidden_states, dim=1) 
 
+        bsz, q_len, h = all_hidden_states.size()
+        _, q_i_len,_ = hidden_states.size()        
         if seq_world_size == 1:
             assert torch.allclose(all_hidden_states, hidden_states)
-        bsz, q_len, h = all_hidden_states.size()
-        _, q_i_len,_ = hidden_states.size()
+            assert q_len == q_i_len
         # flash attn, Q_i and fully K, V
-        
+
         query_states = self.self_attn.q_proj(hidden_states).view(bsz, q_i_len, self.self_attn.num_heads, self.self_attn.head_dim).transpose(1, 2)
         key_states = self.self_attn.k_proj(all_hidden_states).view(bsz, q_len, self.self_attn.num_key_value_heads, self.self_attn.head_dim).transpose(1, 2)
         value_states = self.self_attn.v_proj(all_hidden_states).view(bsz, q_len, self.self_attn.num_key_value_heads, self.self_attn.head_dim).transpose(1, 2)
-
         # modify following code with torch.nn.functional.scaled_dot_product_attention(), 
         # reference: modeling_llama.py/LlamaSdaAttention/forward func
 
@@ -96,7 +95,7 @@ def lss_layer_forward(
             value_states = value_states.contiguous()
         
         is_causal = True if causal_mask is None and q_len > 1 else False
-
+        # print(f"lss is_causal is {is_causal}")
         if is_causal and seq_world_size > 1:
             # 通过修改attn_mask来弥补is_causal的不同
             is_causal = False
@@ -106,6 +105,13 @@ def lss_layer_forward(
             causal_mask = all_causal_mask[seq_rank*sL:(seq_rank+1)*sL,:]
             # 根据rank来调整causal_mask,可优化生成causal_mask的过程
 
+        # print(f"causal_mask is {causal_mask}")
+        # print(f"query_states is {query_states} norm is {torch.linalg.matrix_norm(query_states)} and shape is {query_states.shape}")
+        # print(f"key_states is {key_states} norm is {torch.linalg.matrix_norm(key_states)} and shape is {key_states.shape}")
+        # print(f"value_states is {value_states} norm is {torch.linalg.matrix_norm(value_states)} and shape is {value_states.shape}")
+        # print(f" is training {self.training}")
+        # print(f"lss dropout_p is {self.self_attn.attention_dropout if self.training else 0.0}")
+        #[b, nh ,s , h]
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states,
             key_states,
@@ -114,6 +120,16 @@ def lss_layer_forward(
             dropout_p=self.self_attn.attention_dropout if self.training else 0.0,
             is_causal=is_causal,
         )
+        # attn_output = attn_output.transpose(1,2)
+        print(f"rank is {dist.get_rank()} lss: attn_output norm is {torch.linalg.matrix_norm(attn_output)} and shape is {attn_output.shape}")
+        
+        # flash attn output [b,s,nh,d]
+        # temp_query_states = query_states.transpose(1,2)
+        # temp_key_states = key_states.transpose(1,2)
+        # temp_value_states = value_states.transpose(1,2)
+        # flash_attn_output = flash_attn_func(temp_query_states, temp_key_states, temp_value_states, dropout_p=self.self_attn.attention_dropout if self.training else 0.0, causal=is_causal)
+        # flash_attn_output = flash_attn_output.transpose(1,2)
+        # print(f"lss: flash attn output is {flash_attn_output}  norm is {torch.linalg.matrix_norm(flash_attn_output)} and shape is {flash_attn_output.shape}")
         
         attn_output = attn_output.transpose(1,2).contiguous()
         attn_output = attn_output.view(bsz, q_i_len, -1)
@@ -173,13 +189,11 @@ def forward(
             "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
         )
         use_cache = False
-
-    print(f"inputs_embeds is: {inputs_embeds}" )
+    assert input_ids is not None
+  
 
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
-
-    print(f"inputs_embeds is: {inputs_embeds}" )
 
     return_legacy_cache = False
     if (
@@ -245,8 +259,7 @@ def forward(
             )
 
         hidden_states = layer_outputs[0]
-        print(f"{layer_idx}th decoder layer and, hidden_states is: {hidden_states}" )
-        if(layer_idx == 1):
+        if(layer_idx == 0):
             sys.exit(0)
 
         if use_cache:

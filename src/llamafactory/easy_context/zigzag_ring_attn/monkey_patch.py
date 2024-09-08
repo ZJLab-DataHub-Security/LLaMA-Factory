@@ -34,7 +34,7 @@ def new_flash_attn_forward(
         softmax_scale,
         causal=causal,
     )
-
+    print(f"zigzag attn_output is {attn_output} norm is {torch.linalg.matrix_norm(attn_output)} and shape is {attn_output.shape}")
     return attn_output
 
 

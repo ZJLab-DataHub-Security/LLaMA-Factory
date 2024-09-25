@@ -1,14 +1,17 @@
 # You can observe that the number of steps for different stage is quite different. They are not magic number. They are set to those numbers simply because I esitimate the time it takes to finish the training, and
 # choose the number such that it fits my daily schedule>_<. This is for you to exactly reproduce my results. You many change the steps to other numbers if you want to.
-MODEL_DIR=${MODEL_DIR:-"/mnt/zj-gpfs/home/qianhao/models/Meta-Llama-3-8B"}
+MODEL_DIR=${MODEL_DIR:-"/nas/qianhao/models/Meta-Llama-3-8B"}
 NGPUS=${NGPUS:-8}
 # NGPUS=1
 WORLD_SIZE=${WORLD_SIZE:-1}
 NUM_PROCESSES=$((${NGPUS} * $((WORLD_SIZE))))
-SEQ_LEN=${SEQ_LEN:-16384}
-# SEQ_LEN=128
+# SEQ_LEN=${SEQ_LEN:-16384}
+SEQ_LEN=32768
 # SP_SIZE=${SP_SIZE:-1}
 SP_SIZE=8
+TRANSFORMERS_CACHE="/mnt/zs-nas/llm-data/home/sunxiaofeng/.cache/huggingface/hub"
+HF_HOME='/mnt/zs-nas/llm-data/home/sunxiaofeng/.cache/huggingface/hub'
+TRITON_CACHE_DIR='/mnt/zs-nas/llm-data/home/sunxiaofeng/.triton/autotune'
 BATCH_SIZE=${BATCH_SIZE:-1}
 BATCH_SIZE=1
 ALGO=llama3_flash_attn
@@ -57,7 +60,7 @@ if [ ! -z ${ALGO+x} ]; then
         --dataset long_sft_32k \
         --template llama3 \
         --cutoff_len ${SEQ_LEN} \
-        --max_steps 10 \
+        --max_steps 1 \
         --overwrite_cache \
         --preprocessing_num_workers 16 \
         --output_dir ./output/7B_4K_bs_2_lr_2e-5_${ALGO}_${TIMESTAMP} \

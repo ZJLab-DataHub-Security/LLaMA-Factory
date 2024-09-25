@@ -79,23 +79,24 @@ def lss_layer_forward(
 
         query_states, key_states = cust_apply_rotary_pos_emb(query_states, key_states, cos_q, sin_q, cos, sin)
 
-        assert past_key_value is None,  "past_key_value is not supported"         
+       # assert past_key_value is None,  "past_key_value is not supported"         
         key_states = repeat_kv(key_states, self.self_attn.num_key_value_groups)
         value_states = repeat_kv(value_states, self.self_attn.num_key_value_groups)
 
-        causal_mask = attention_mask
-        # assert attention_mask is None, f"attn_mask type is {attention_mask.dtype}, The result with \'attention_mask\' is not guaranteed"
-        if attention_mask is not None:
-            # TODO: 这里可能会影结果
-            causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]    
+        # causal_mask = attention_mask
+        # # assert attention_mask is None, f"attn_mask type is {attention_mask.dtype}, The result with \'attention_mask\' is not guaranteed"
+        # if attention_mask is not None:
+        #     # TODO: 这里可能会影结果
+        #     causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]    
 
-        if query_states.device.type == "cuda" and causal_mask is not None:
-            query_states = query_states.contiguous()
-            key_states = key_states.contiguous()
-            value_states = value_states.contiguous()
-        
-        is_causal = True if causal_mask is None and q_len > 1 else False
-        # print(f"lss is_causal is {is_causal}")
+        # if query_states.device.type == "cuda" and causal_mask is not None:
+        query_states = query_states.contiguous()
+        key_states = key_states.contiguous()
+        value_states = value_states.contiguous()
+    
+        is_causal = True
+        # is_causal = True if causal_mask is None and q_len > 1 else False
+
         if is_causal and seq_world_size > 1:
             # 通过修改attn_mask来弥补is_causal的不同
             is_causal = False
@@ -105,12 +106,6 @@ def lss_layer_forward(
             causal_mask = all_causal_mask[seq_rank*sL:(seq_rank+1)*sL,:]
             # 根据rank来调整causal_mask,可优化生成causal_mask的过程
 
-        # print(f"causal_mask is {causal_mask}")
-        # print(f"query_states is {query_states} norm is {torch.linalg.matrix_norm(query_states)} and shape is {query_states.shape}")
-        # print(f"key_states is {key_states} norm is {torch.linalg.matrix_norm(key_states)} and shape is {key_states.shape}")
-        # print(f"value_states is {value_states} norm is {torch.linalg.matrix_norm(value_states)} and shape is {value_states.shape}")
-        # print(f" is training {self.training}")
-        # print(f"lss dropout_p is {self.self_attn.attention_dropout if self.training else 0.0}")
         #[b, nh ,s , h]
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states,
@@ -120,22 +115,12 @@ def lss_layer_forward(
             dropout_p=self.self_attn.attention_dropout if self.training else 0.0,
             is_causal=is_causal,
         )
-        # attn_output = attn_output.transpose(1,2)
-        print(f"rank is {dist.get_rank()} lss: attn_output norm is {torch.linalg.matrix_norm(attn_output)} and shape is {attn_output.shape}")
-        
-        # flash attn output [b,s,nh,d]
-        # temp_query_states = query_states.transpose(1,2)
-        # temp_key_states = key_states.transpose(1,2)
-        # temp_value_states = value_states.transpose(1,2)
-        # flash_attn_output = flash_attn_func(temp_query_states, temp_key_states, temp_value_states, dropout_p=self.self_attn.attention_dropout if self.training else 0.0, causal=is_causal)
-        # flash_attn_output = flash_attn_output.transpose(1,2)
-        # print(f"lss: flash attn output is {flash_attn_output}  norm is {torch.linalg.matrix_norm(flash_attn_output)} and shape is {flash_attn_output.shape}")
-        
+ 
         attn_output = attn_output.transpose(1,2).contiguous()
         attn_output = attn_output.view(bsz, q_i_len, -1)
 
         attn_output = self.self_attn.o_proj(attn_output)
-
+      
         hidden_states = attn_output
         present_key_value = past_key_value
 
@@ -144,6 +129,7 @@ def lss_layer_forward(
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
+
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
@@ -151,7 +137,6 @@ def lss_layer_forward(
 
         if use_cache:
             outputs += (present_key_value,)
-
         return outputs
 
 
@@ -259,8 +244,6 @@ def forward(
             )
 
         hidden_states = layer_outputs[0]
-        if(layer_idx == 0):
-            sys.exit(0)
 
         if use_cache:
             next_decoder_cache = layer_outputs[2 if output_attentions else 1]
@@ -290,10 +273,10 @@ def forward(
 
 
 
-def apply_lss_transformer_attn_monkey_patch_llama(sp_size= None):
+def apply_lss_transformer_attn_monkey_patch_llama():
 
     # 通过修改模型的结构完成SP的优化
-    initialize_distributed(sp_size=sp_size)
+    initialize_distributed()
     # 重写Model的forward函数，来完成传参上的修改
     transformers.models.llama.modeling_llama.LlamaModel.forward =  forward
     transformers.models.llama.modeling_llama.LlamaDecoderLayer.forward = lss_layer_forward  

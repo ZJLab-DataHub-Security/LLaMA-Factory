@@ -9,7 +9,7 @@ from torch.utils.checkpoint import _get_autocast_kwargs, check_backward_validity
 
 import transformers
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, BaseModelOutputWithPast
-
+import torch.distributed as dist 
 from einops import rearrange
 
 from .lightseq_async_attn import _lightseq_forward, _lightseq_backward
@@ -123,9 +123,10 @@ class CheckpointFunctionEndWithFlashAttention(torch.autograd.Function):
             q, k, v, residual = run_function(*args)
             softmax_scale = q.shape[-1] ** (-0.5)
 
-            # print(f"ckewf: q is {q} norm is {torch.linalg.matrix_norm(q)} and shape is {q.shape}")
-            # print(f"ckewf: k is {k} norm is {torch.linalg.matrix_norm(k)} and shape is {k.shape}")
-            # print(f"ckewf: v is {v} norm is {torch.linalg.matrix_norm(v)} and shape is {v.shape}")  
+            if dist.get_rank() == 2 :
+                print(f"rank is {dist.get_rank()} ckewf: q norm is {torch.norm(q)} and mean is {q.mean()}")
+                print(f"rank is {dist.get_rank()} ckewf: k norm is {torch.norm(k)} and mean is {k.mean()}")
+                print(f"rank is {dist.get_rank()} ckewf: v norm is {torch.norm(v)} and mean is {v.mean()}")  
             # lightseq version
             _, _, _, out, softmax_lse = _lightseq_forward(q, k, v, True, softmax_scale, comm_mode='lightseq')
             rng_state = None
@@ -136,7 +137,8 @@ class CheckpointFunctionEndWithFlashAttention(torch.autograd.Function):
             ctx.softmax_scale = softmax_scale
         
         ctx.save_for_backward(*tensor_inputs)
-        print(f"rank {get_sequence_parallel_rank()} ckewf: attn_output norm is {torch.linalg.matrix_norm(out)} and shape is {out.shape}")
+        if dist.get_rank() == 2 :
+            print(f"rank {get_sequence_parallel_rank()} ckewf: attn_output norm is {torch.norm(out)} and mean is {out.mean()}")
         return out, residual
 
     @staticmethod
@@ -404,25 +406,31 @@ def llama_layer_forward(
         return query_states.contiguous(), key_states.contiguous(), value_states.contiguous(), residual
 
     elif compute_ffn_only:
+        if get_sequence_parallel_rank() == 2 :
+            print(f"rank {get_sequence_parallel_rank()} ffn input is {torch.norm(hidden_states)} mean is {hidden_states.mean()}")
         hidden_states = self.self_attn.o_proj(rearrange(hidden_states, 'b h s d -> b s (h d)'))
         # Need to add residual here to make sure checkpoint is right after attention
         if residual.requires_grad:
             # save the gradient of residual to the local buffer
             # collect the hooks which should be removed after backward to avoid memory leak
             hook = residual.register_hook(save_res_grad_hook)
-            global_hooks.append(hook)
-        
+            global_hooks.append(hook)   
         hidden_states = residual + hidden_states
 
         # Fully Connected
-
+        if get_sequence_parallel_rank() == 2 :
+            print(f"rank {get_sequence_parallel_rank()} before post_mlp is {torch.norm(hidden_states)} and mean is {hidden_states.mean()}")   
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
+        if get_sequence_parallel_rank() == 2 :
+            print(f"rank {get_sequence_parallel_rank()} after layernorm is {torch.norm(hidden_states)} mean is {hidden_states.mean()}")   
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
-
+        if get_sequence_parallel_rank() == 2 :
+            print(f"rank {get_sequence_parallel_rank()} after post and mlp is {torch.norm(hidden_states)}")   
         outputs = (hidden_states,)
-
+        # if get_sequence_parallel_rank() == 2 :
+        #     print(f"rank {get_sequence_parallel_rank()} fnn norm is {torch.norm(hidden_states)}")
     else:
         raise AttributeError
 
@@ -574,8 +582,7 @@ def forward(
 
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
-            
-            if idx == 0:
+            if idx == 2:
                 sys.exit(0)
     else:
         for idx, decoder_layer in enumerate(self.layers):

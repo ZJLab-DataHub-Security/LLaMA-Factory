@@ -37,11 +37,18 @@ def new_flash_attn_forward(
     print(f"shape is {query_states.shape}")
     local_s = query_states.shape[2] #[b,a,local_s,h]
     cu_seqlens = torch.tensor([i*local_s for i in range(query_states.shape[3]*dist.get_world_size()+1)])
-    llama3_flash_attn_prepare_cu_seqlens(cu_seqlens= cu_seqlens,causal=causal, rank=dist.get_rank(),world_size = dist.get_world_size())
+    cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, locak_k_slice = \
+        llama3_flash_attn_prepare_cu_seqlens(cu_seqlens= cu_seqlens,causal=causal, rank=dist.get_rank(),world_size = dist.get_world_size())
     attn_output = llama3_flash_attn_varlen_func(
         query_states,
         key_states,
         value_states,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        1,
+        locak_k_slice,
         dropout,
         softmax_scale,
         causal=causal,

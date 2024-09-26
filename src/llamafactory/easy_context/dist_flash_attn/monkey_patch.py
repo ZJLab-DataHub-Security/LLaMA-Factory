@@ -2,18 +2,18 @@
 Materialization-aware gradient checkpointing monkey patch.
 """
 from typing import List, Optional, Tuple
-import sys 
+
 import torch
 from torch import nn
 from torch.utils.checkpoint import _get_autocast_kwargs, check_backward_validity, get_device_states, set_device_states, detach_variable
 
 import transformers
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, BaseModelOutputWithPast
-import torch.distributed as dist 
+
 from einops import rearrange
 
 from .lightseq_async_attn import _lightseq_forward, _lightseq_backward
-from .async_communication import initialize_distributed, reset_global_memory_buffer, get_sequence_parallel_rank
+from .async_communication import initialize_distributed, reset_global_memory_buffer
 
 # define a global buffer to save flash attention outputs
 # it's called global because it saves the outputs for all layers
@@ -123,10 +123,6 @@ class CheckpointFunctionEndWithFlashAttention(torch.autograd.Function):
             q, k, v, residual = run_function(*args)
             softmax_scale = q.shape[-1] ** (-0.5)
 
-            if dist.get_rank() == 2 :
-                print(f"rank is {dist.get_rank()} ckewf: q norm is {torch.norm(q)} and mean is {q.mean()}")
-                print(f"rank is {dist.get_rank()} ckewf: k norm is {torch.norm(k)} and mean is {k.mean()}")
-                print(f"rank is {dist.get_rank()} ckewf: v norm is {torch.norm(v)} and mean is {v.mean()}")  
             # lightseq version
             _, _, _, out, softmax_lse = _lightseq_forward(q, k, v, True, softmax_scale, comm_mode='lightseq')
             rng_state = None
@@ -137,8 +133,7 @@ class CheckpointFunctionEndWithFlashAttention(torch.autograd.Function):
             ctx.softmax_scale = softmax_scale
         
         ctx.save_for_backward(*tensor_inputs)
-        if dist.get_rank() == 2 :
-            print(f"rank {get_sequence_parallel_rank()} ckewf: attn_output norm is {torch.norm(out)} and mean is {out.mean()}")
+
         return out, residual
 
     @staticmethod
@@ -174,13 +169,9 @@ class CheckpointFunctionEndWithFlashAttention(torch.autograd.Function):
                 if ctx.had_cuda_in_fwd:
                     set_device_states(ctx.fwd_gpu_devices, ctx.fwd_gpu_states)
             detached_inputs = detach_variable(tuple(inputs))
-            # with torch.enable_grad(), \
-            #      torch.cuda.amp.autocast(**ctx.gpu_autocast_kwargs), \
-            #      torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):
             with torch.enable_grad(), \
-                    torch.amp.autocast('cuda',**ctx.gpu_autocast_kwargs) ,\
-                    torch.amp.autocast('cpu', **ctx.cpu_autocast_kwargs):
-                
+                 torch.cuda.amp.autocast(**ctx.gpu_autocast_kwargs), \
+                 torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):
                 # Stop recomputation before flash attention
                 # It is unecessary to run recomputation for flash attn
                 q, k, v, residual = ctx.run_function(*detached_inputs)
@@ -303,13 +294,9 @@ class CheckpointFunctionLastModule(torch.autograd.Function):
                 if ctx.had_cuda_in_fwd:
                     set_device_states(ctx.fwd_gpu_devices, ctx.fwd_gpu_states)
             detached_inputs = detach_variable(tuple(inputs))
-            # with torch.enable_grad(), \
-            #      torch.cuda.amp.autocast(**ctx.gpu_autocast_kwargs), \
-            #      torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):
-
             with torch.enable_grad(), \
-                torch.amp.autocast('cuda',**ctx.gpu_autocast_kwargs) ,\
-                torch.amp.autocast('cpu', **ctx.cpu_autocast_kwargs):
+                 torch.cuda.amp.autocast(**ctx.gpu_autocast_kwargs), \
+                 torch.cpu.amp.autocast(**ctx.cpu_autocast_kwargs):
                 outputs = ctx.run_function(*detached_inputs)
 
         if isinstance(outputs, torch.Tensor):
@@ -383,18 +370,16 @@ def llama_layer_forward(
 
         # Flash Attention
         bsz, q_len, _ = hidden_states.size()
-
         try:
             query_states = self.self_attn.q_proj(hidden_states).view(bsz, q_len, self.self_attn.num_heads, self.self_attn.head_dim).transpose(1, 2)
-            key_states = self.self_attn.k_proj(hidden_states)
-            key_states = key_states.view(bsz, q_len, self.self_attn.num_key_value_heads, self.self_attn.head_dim).transpose(1, 2)
+            key_states = self.self_attn.k_proj(hidden_states).view(bsz, q_len, self.self_attn.num_key_value_heads, self.self_attn.head_dim).transpose(1, 2)
             value_states = self.self_attn.v_proj(hidden_states).view(bsz, q_len, self.self_attn.num_key_value_heads, self.self_attn.head_dim).transpose(1, 2)
         except:
             # old transformers versions don't support num_key_value_heads
             query_states = self.self_attn.q_proj(hidden_states).view(bsz, q_len, self.self_attn.num_heads, self.self_attn.head_dim).transpose(1, 2)
             key_states = self.self_attn.k_proj(hidden_states).view(bsz, q_len, self.self_attn.num_heads, self.self_attn.head_dim).transpose(1, 2)
             value_states = self.self_attn.v_proj(hidden_states).view(bsz, q_len, self.self_attn.num_heads, self.self_attn.head_dim).transpose(1, 2)
-       
+
         kv_seq_len = key_states.shape[-2]
         assert past_key_value is None, "past_key_value is not supported"
 
@@ -406,31 +391,25 @@ def llama_layer_forward(
         return query_states.contiguous(), key_states.contiguous(), value_states.contiguous(), residual
 
     elif compute_ffn_only:
-        if get_sequence_parallel_rank() == 2 :
-            print(f"rank {get_sequence_parallel_rank()} ffn input is {torch.norm(hidden_states)} mean is {hidden_states.mean()}")
         hidden_states = self.self_attn.o_proj(rearrange(hidden_states, 'b h s d -> b s (h d)'))
         # Need to add residual here to make sure checkpoint is right after attention
         if residual.requires_grad:
             # save the gradient of residual to the local buffer
             # collect the hooks which should be removed after backward to avoid memory leak
             hook = residual.register_hook(save_res_grad_hook)
-            global_hooks.append(hook)   
+            global_hooks.append(hook)
+        
         hidden_states = residual + hidden_states
 
         # Fully Connected
-        if get_sequence_parallel_rank() == 2 :
-            print(f"rank {get_sequence_parallel_rank()} before post_mlp is {torch.norm(hidden_states)} and mean is {hidden_states.mean()}")   
+
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        if get_sequence_parallel_rank() == 2 :
-            print(f"rank {get_sequence_parallel_rank()} after layernorm is {torch.norm(hidden_states)} mean is {hidden_states.mean()}")   
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
-        if get_sequence_parallel_rank() == 2 :
-            print(f"rank {get_sequence_parallel_rank()} after post and mlp is {torch.norm(hidden_states)}")   
+
         outputs = (hidden_states,)
-        # if get_sequence_parallel_rank() == 2 :
-        #     print(f"rank {get_sequence_parallel_rank()} fnn norm is {torch.norm(hidden_states)}")
+
     else:
         raise AttributeError
 
@@ -582,8 +561,6 @@ def forward(
 
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
-            if idx == 2:
-                sys.exit(0)
     else:
         for idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
@@ -627,7 +604,5 @@ def forward(
 
 def apply_dist_flash_attn_monkey_patch_llama(sp_size=None):
     initialize_distributed(sp_size=sp_size)
-    # 更新LlamaModel的forward函数
     transformers.models.llama.modeling_llama.LlamaModel.forward = forward
-    # 更新LlamaDecoderLayer的forward函数，LlamaDecoderLayer是LLamaModel的子layer
     transformers.models.llama.modeling_llama.LlamaDecoderLayer.forward = llama_layer_forward

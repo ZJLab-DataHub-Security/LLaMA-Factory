@@ -134,8 +134,7 @@ def load_model(
         elif model_args.train_from_scratch:
             model = AutoModelForCausalLM.from_config(config)
         else:
-            model = AutoModelForCausalLM.from_pretrained(**init_kwargs)
-
+            model = AutoModelForCausalLM.from_pretrained(**init_kwargs,attn_implementation="flash_attention_2",torch_dtype='auto')
         if model_args.mixture_of_depths == "convert":
             model = convert_pretrained_model_to_mod(model, config, model_args)
 

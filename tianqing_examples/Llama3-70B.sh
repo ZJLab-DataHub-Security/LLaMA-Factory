@@ -1,18 +1,19 @@
 # You can observe that the number of steps for different stage is quite different. They are not magic number. They are set to those numbers simply because I esitimate the time it takes to finish the training, and
 # choose the number such that it fits my daily schedule>_<. This is for you to exactly reproduce my results. You many change the steps to other numbers if you want to.
 MODEL_DIR=${MODEL_DIR:-"/mnt/zj-gpfs/home/qianhao/models/Meta-Llama-3-8B"}
-NGPUS=${NGPUS:-8}
+NGPUS=${NGPUS:-6}
 # NGPUS=1
 WORLD_SIZE=${WORLD_SIZE:-1}
 NUM_PROCESSES=$((${NGPUS} * $((WORLD_SIZE))))
-SEQ_LEN=${SEQ_LEN:-16384}
-# SEQ_LEN=128
+# SEQ_LEN=${SEQ_LEN:-16384}
+SEQ_LEN=${SEQ_LEN:-12288}
 # SP_SIZE=${SP_SIZE:-1}
-SP_SIZE=8
+SP_SIZE=6
 BATCH_SIZE=${BATCH_SIZE:-1}
 BATCH_SIZE=1
 ALGO=llama3_flash_attn
-# ALGO=dist_flash_attn
+CUDA_VISIBLE_DEVICES=2,3,4,5,6,7
+# ALGO=lss_transformer
 # COMPARED_ALGO=data_parallel
 # COMPARED_ALGO=dist_flash_attn
 # COMPARED_ALGO=zigzag_ring_attn
@@ -99,7 +100,7 @@ if [ ! -z ${COMPARED_ALGO+x} ]; then
         --dataset long_sft_32k \
         --template llama3 \
         --cutoff_len ${SEQ_LEN} \
-        --max_steps 1 \
+        --max_steps 10 \
         --overwrite_cache \
         --preprocessing_num_workers 16 \
         --output_dir ./output/7B_4K_bs_2_lr_2e-5_${COMPARED_ALGO}_${TIMESTAMP} \

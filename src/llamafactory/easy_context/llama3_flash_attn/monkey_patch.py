@@ -10,6 +10,7 @@ from transformers.cache_utils import DynamicCache, Cache
 from transformers.utils import logging
 import torch.distributed as dist
 import sys 
+from einops import rearrange
 
 def new_flash_attn_forward(
     query_states,
@@ -34,17 +35,18 @@ def new_flash_attn_forward(
     # assert attention_mask is None
     assert causal is True
     # assert use_sliding_windows is False
-    print(f"shape is {query_states.shape}")
-    local_s = query_states.shape[2] #[b,a,local_s,h]
-    cu_seqlens = torch.tensor([i*local_s for i in range(query_states.shape[3]*dist.get_world_size()+1)])
+    local_s = query_states.shape[1] #[b,s,a,h]
+    cu_seqlens = torch.tensor([0,local_s*dist.get_world_size()])
+    rank = dist.get_rank()
     cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, locak_k_slice = \
         llama3_flash_attn_prepare_cu_seqlens(cu_seqlens= cu_seqlens,causal=causal, rank=dist.get_rank(),world_size = dist.get_world_size())
+    # sys.exit(0)
     attn_output = llama3_flash_attn_varlen_func(
-        query_states,
-        key_states,
-        value_states,
-        cu_seqlens_q,
-        cu_seqlens_k,
+        rearrange(query_states,'b s a h -> (b s) a h'),
+        rearrange(key_states,'b s a h -> (b s) a h'),
+        rearrange(value_states,'b s a h -> (b s) a h'),
+        cu_seqlens_q.to(dtype=torch.int32,device=f"cuda:{rank}"),
+        cu_seqlens_k.to(dtype=torch.int32,device=f"cuda:{rank}"),
         max_seqlen_q,
         max_seqlen_k,
         1,

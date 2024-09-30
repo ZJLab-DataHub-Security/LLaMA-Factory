@@ -15,11 +15,12 @@ def initialize_distributed(sp_size=None):
                 "skipping initialization ...",
                 flush=True,
             )
+        pass 
     else:
         # 初始化dist设置
-        if int(os.environ["RANK"]) == 0:
-            print("Initializing Torch distributed.")
+        # if int(os.environ["RANK"]) == 0:
+        #     print("Initializing Torch distributed.")
         dist.init_process_group(backend="nccl")
-        local_world_size = int(os.environ["LOCAL_WORLD_SIZE"])
-        global_world_size = dist.get_world_size()
-        torch.cuda.set_device(dist.get_rank() % local_world_size)
+        # local_world_size = int(os.environ["LOCAL_WORLD_SIZE"])
+        # global_world_size = dist.get_world_size()
+        # torch.cuda.set_device(dist.get_rank() % local_world_size)

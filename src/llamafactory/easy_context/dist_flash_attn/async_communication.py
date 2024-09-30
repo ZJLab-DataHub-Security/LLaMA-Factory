@@ -48,7 +48,6 @@ def initialize_distributed(sp_size=None):
                 flush=True,
             )
     else:
-        # 初始化dist设置
         if int(os.environ["RANK"]) == 0:
             print("Initializing Torch distributed.")
         dist.init_process_group(backend="nccl")
@@ -89,8 +88,7 @@ def _initialize_sequence_parallel(sequence_parallel_size=None):
             _SEQUENCE_PARALLEL_GROUP = group
             _SEQUENCE_PARALLEL_RANK = ranks.index(rank)
             _SEQUENCE_PARALLEL_SIZE = len(ranks)
-        # 多进程代码，为单独Rnak进程设置的
-        
+
     if dist.get_rank() == 0:
         print("************ Finish sequence pralell group Initialization. ***********")
     # _set_global_memory_buffer()

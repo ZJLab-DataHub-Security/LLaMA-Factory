@@ -11,7 +11,7 @@ def extract_local(value, rank, world_size, device, dim=1):
     return local_value.to(device)
 
 
-def prepare_llama3_flash_attn_attn_inputs(
+def prepare_llama3_flash_attn_inputs(
     input_ids, position_ids, target_ids, rank, world_size, device
 ):
     local_input_ids = extract_local(
@@ -41,7 +41,7 @@ def prepare_llama3_flash_attn_attn_inputs(
         "local_target_ids": local_target_ids,
     }
 
-def prepare_llama3_flash_attn_attn_sft_inputs(
+def prepare_llama3_flash_attn_sft_inputs(
     input_ids, attention_mask, position_ids, labels, rank, world_size, device
 ):
     local_input_ids = extract_local(

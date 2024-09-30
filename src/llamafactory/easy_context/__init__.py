@@ -8,7 +8,8 @@ from .ulysses_attn.prepare_inputs import prepare_ulysses_attn_inputs, prepare_ul
 from .ulysses_attn.monkey_patch import apply_ulysses_attn_monkey_patch_llama 
 from .lss_transformer.prepare_input import prepare_lss_flash_attn_inputs, prepare_lss_flash_attn_sft_inputs
 from .lss_transformer.monkey_patch import apply_lss_transformer_attn_monkey_patch_llama
-
+from .llama3_flash_attn.monkey_patch import apply_llama3_flash_attn_attn_monkey_patch_llama
+from .llama3_flash_attn.prepare_inputs import prepare_llama3_flash_attn_sft_inputs
 
 import torch
 import torch.nn.functional as F
@@ -65,6 +66,10 @@ def prepare_seq_parallel_sft_inputs(
         return prepare_lss_flash_attn_sft_inputs(
             input_ids, attention_mask, position_ids, shift_labels, rank, world_size, device
         )
+    elif seq_algo == "llama3_flash_attn":
+        return prepare_llama3_flash_attn_sft_inputs(
+            input_ids, attention_mask, position_ids, shift_labels, rank, world_size, device
+        )
     elif seq_algo == "data_parallel":
         return {
             "input_ids": input_ids,
@@ -79,7 +84,7 @@ def apply_seq_parallel_monkey_patch(
     seq_algo, model, sp_size=None
 ):
     assert seq_algo in ["zigzag_ring_attn", "dist_flash_attn", "ulysses_attn", "data_parallel",
-                        "lss_transformer"], f"Invalid seq_algo: {seq_algo}"
+                        "lss_transformer", "llama3_flash_attn"], f"Invalid seq_algo: {seq_algo}"
     assert model in ["llama", "mistral"], f"Invalid model: {model}"
     if seq_algo == "data_parallel":
         return
@@ -93,6 +98,8 @@ def apply_seq_parallel_monkey_patch(
         apply_ulysses_attn_monkey_patch_llama()
     elif seq_algo == "lss_transformer" and model == "llama":
         apply_lss_transformer_attn_monkey_patch_llama()
+    elif seq_algo == "llama3_flash_attn" and model == "llama":
+        apply_llama3_flash_attn_attn_monkey_patch_llama()
     else:
         raise ValueError(f"Invalid seq_algo: {seq_algo} or model: {model}")
         

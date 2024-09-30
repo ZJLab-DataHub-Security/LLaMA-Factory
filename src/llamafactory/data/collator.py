@@ -93,7 +93,6 @@ class SeqParallelDataCollator(DataCollatorForSeq2Seq):
     device: Optional[Any] = None
 
     def __call__(self, features: Sequence[Dict[str, Any]], return_tensors=None) -> Dict[str, torch.Tensor]:
-        print(f"features is {features} and return_tensors is {return_tensors}")
         batch = super().__call__(features, return_tensors)
         if self.seq_algo == "data_parallel":
             return batch
@@ -112,7 +111,7 @@ class SeqParallelDataCollator(DataCollatorForSeq2Seq):
             input_ids = input_ids[dp_rank * group_bs: (dp_rank + 1) * group_bs]
             attention_mask = attention_mask[dp_rank * group_bs: (dp_rank + 1) * group_bs]
             labels = labels[dp_rank * group_bs: (dp_rank + 1) * group_bs]
-        print(f"before prepare input_ids is {input_ids}")
+        # print(f"before prepare input_ids is {input_ids}")
         batch = prepare_seq_parallel_sft_inputs(self.seq_algo,
                                                 input_ids=input_ids,
                                                 attention_mask=attention_mask,

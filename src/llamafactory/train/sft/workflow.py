@@ -48,7 +48,6 @@ def run_sft(
 
     local_rank = int(os.getenv("LOCAL_RANK"))
     world_size = torch.distributed.get_world_size()
-    print(f"seq_len: {data_args.cutoff_len}")
     data_collator = SeqParallelDataCollator(
         tokenizer=tokenizer,
         pad_to_multiple_of=data_args.cutoff_len if tokenizer.padding_side == "right" else None,

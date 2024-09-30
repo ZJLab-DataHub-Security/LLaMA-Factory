@@ -16,7 +16,7 @@ def test_LlamaRMSNorm():
     set_seed()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # 创建一个随机矩阵
+    # 创建一个随机矩阵d
     batch_size, seq_len, hidden_size = 2, 300, 768
     matrix = torch.randn(batch_size, seq_len, hidden_size, device=device)
     

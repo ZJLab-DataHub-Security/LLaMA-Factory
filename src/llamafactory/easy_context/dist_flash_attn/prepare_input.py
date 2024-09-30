@@ -1,10 +1,12 @@
+
+
 def extract_local(value, rank, world_size, device, dim=1):
     value_local = value.chunk(world_size, dim=dim)[rank]
     if device == None:
         return value_local
     return value_local.to(device)
 
-# 感觉和lss类似，拆分输入的部分数据
+
 def prepare_dist_flash_attn_inputs(
     input_ids, position_ids, target_ids, rank, world_size, device
 ):

@@ -3,38 +3,56 @@ from typing import List, Optional, Tuple, Union
 import warnings
 import torch
 import torch.utils.checkpoint
-from ring_flash_attn.llama3_flash_attn_flash_attn import llama3_flash_attn_flash_attn_func
-
+from ring_flash_attn.llama3_flash_attn_varlen import llama3_flash_attn_prepare_cu_seqlens, llama3_flash_attn_varlen_kvpacked_func, llama3_flash_attn_varlen_func
+from transformers.models.llama.modeling_llama import BaseModelOutputWithPast
+import transformers.models
+from transformers.cache_utils import DynamicCache, Cache
+from transformers.utils import logging
+import torch.distributed as dist
+import sys 
 
 def new_flash_attn_forward(
-    self,
     query_states,
     key_states,
     value_states,
     attention_mask,
     query_length,
+    is_causal = True,
     dropout=0.0,
-    softmax_scale=None,
-    use_sliding_windows=False,
+    position_ids = None, 
+    softmax_scale: Optional[float] = None,
+    sliding_window : Optional[int] = None,
+    use_top_left_mask=False,
+    **kwargs    
 ):
-    if not self._flash_attn_uses_top_left_mask:
-        causal = self.is_causal
-    else:
-        causal = self.is_causal and query_length != 1
-
+    # if not self._flash_attn_uses_top_left_mask:
+    #     causal = self.is_causal
+    # else:
+    #     causal = self.is_causal and query_length != 1
+    causal = True 
     # Contains at least one padding token in the sequence
-    assert attention_mask is None
+    # assert attention_mask is None
     assert causal is True
-    assert use_sliding_windows is False
-    attn_output = llama3_flash_attn_flash_attn_func(
+    # assert use_sliding_windows is False
+    print(f"shape is {query_states.shape}")
+    local_s = query_states.shape[2] #[b,a,local_s,h]
+    cu_seqlens = torch.tensor([i*local_s for i in range(query_states.shape[3]*dist.get_world_size()+1)])
+    cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, locak_k_slice = \
+        llama3_flash_attn_prepare_cu_seqlens(cu_seqlens= cu_seqlens,causal=causal, rank=dist.get_rank(),world_size = dist.get_world_size())
+    attn_output = llama3_flash_attn_varlen_func(
         query_states,
         key_states,
         value_states,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        1,
+        locak_k_slice,
         dropout,
         softmax_scale,
         causal=causal,
     )
-    print(f"zigzag attn_output is {attn_output} norm is {torch.linalg.matrix_norm(attn_output)} and shape is {attn_output.shape}")
     return attn_output
 
 
@@ -47,6 +65,7 @@ def new_decoder_forward(
     output_attentions: Optional[bool] = False,
     use_cache: Optional[bool] = False,
     cache_position: Optional[torch.LongTensor] = None,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     **kwargs,
 ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
     assert isinstance(
@@ -65,7 +84,7 @@ def new_decoder_forward(
 
     hidden_states = self.input_layernorm(hidden_states)
 
-    # Self Attention
+    # Self Attention    
     hidden_states, self_attn_weights, present_key_value = self.self_attn(
         hidden_states=hidden_states,
         attention_mask=attention_mask,
@@ -96,7 +115,7 @@ def new_decoder_forward(
 
 
 def apply_llama3_flash_attn_attn_monkey_patch_llama():
-    transformers.models.llama.modeling_llama.LlamaFlashAttention2._flash_attention_forward = (
+    transformers.models.llama.modeling_llama._flash_attention_forward = (
         new_flash_attn_forward
     )
     transformers.models.llama.modeling_llama.LlamaDecoderLayer.forward = (
@@ -104,10 +123,3 @@ def apply_llama3_flash_attn_attn_monkey_patch_llama():
     )
 
 
-def apply_llama3_flash_attn_attn_monkey_patch_mistral():
-    transformers.models.mistral.modeling_mistral.MistralFlashAttention2._flash_attention_forward = (
-        new_flash_attn_forward
-    )
-    transformers.models.mistral.modeling_mistral.MistralDecoderLayer.forward = (
-        new_decoder_forward
-    )

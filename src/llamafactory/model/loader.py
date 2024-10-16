@@ -11,7 +11,7 @@ from .model_utils.mod import convert_pretrained_model_to_mod, load_mod_pretraine
 from .model_utils.unsloth import load_unsloth_pretrained_model
 from .model_utils.valuehead import load_valuehead_params
 from .patcher import patch_config, patch_model, patch_tokenizer, patch_valuehead_model
-
+import torch 
 
 if TYPE_CHECKING:
     from transformers import PretrainedConfig, PreTrainedModel, PreTrainedTokenizer, ProcessorMixin
@@ -135,7 +135,7 @@ def load_model(
             model = AutoModelForCausalLM.from_config(config)
         else:
             if finetuning_args.parallel_mode == 'llama3_flash_attn':
-                model = AutoModelForCausalLM.from_pretrained(**init_kwargs,attn_implementation="flash_attention_2",torch_dtype='auto')
+                model = AutoModelForCausalLM.from_pretrained(**init_kwargs,attn_implementation="flash_attention_2",torch_dtype=torch.bfloat16)
             else: 
                 model = AutoModelForCausalLM.from_pretrained(**init_kwargs)
         if model_args.mixture_of_depths == "convert":

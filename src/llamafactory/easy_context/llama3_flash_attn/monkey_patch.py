@@ -3,7 +3,7 @@ from typing import List, Optional, Tuple, Union
 import warnings
 import torch
 import torch.utils.checkpoint
-from ring_flash_attn.llama3_flash_attn_varlen import llama3_flash_attn_prepare_cu_seqlens, llama3_flash_attn_varlen_kvpacked_func, llama3_flash_attn_varlen_func
+from ring_flash_attn.llama3_flash_attn_varlen import llama3_flash_attn_prepare_cu_seqlens, llama3_flash_attn_varlen_kvpacked_func, llama3_flash_attn_varlen_func, llama3_flash_attn_varlen_funcv2
 from transformers.models.llama.modeling_llama import BaseModelOutputWithPast
 import transformers.models
 from transformers.cache_utils import DynamicCache, Cache
@@ -36,12 +36,12 @@ def new_flash_attn_forward(
     assert causal is True
     # assert use_sliding_windows is False
     local_s = query_states.shape[1] #[b,s,a,h]
-    cu_seqlens = torch.tensor([0,local_s*dist.get_world_size()])
+    cu_seqlens = torch.tensor([0,local_s*dist.get_world_size()]) # only for b == 1
     rank = dist.get_rank()
     cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, locak_k_slice = \
         llama3_flash_attn_prepare_cu_seqlens(cu_seqlens= cu_seqlens,causal=causal, rank=dist.get_rank(),world_size = dist.get_world_size())
     # sys.exit(0)
-    attn_output = llama3_flash_attn_varlen_func(
+    attn_output = llama3_flash_attn_varlen_funcv2(
         rearrange(query_states,'b s a h -> (b s) a h'),
         rearrange(key_states,'b s a h -> (b s) a h'),
         rearrange(value_states,'b s a h -> (b s) a h'),

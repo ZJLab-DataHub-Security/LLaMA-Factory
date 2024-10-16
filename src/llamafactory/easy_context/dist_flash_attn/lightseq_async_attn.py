@@ -15,7 +15,7 @@ import triton.language as tl
 import time
 import numpy as np
 from tqdm import tqdm
-
+import nvtx 
 try:
     from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
 except:
@@ -240,7 +240,7 @@ def maybe_reduce_dkv(nkvh, dkv):
     dkv_reshape = dkv.view(bs, slen, nkvh, n_rep, hdim)
     return torch.sum(dkv_reshape, dim=3)
 
-
+@nvtx.annotate(color='yellow')
 def _lightseq_forward(q, k, v, causal, sm_scale, comm_mode):
     # maybe_contiguous = lambda x: x.contiguous() if x.stride(-1) != 1 else x
     # q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
@@ -338,7 +338,7 @@ def _lightseq_forward(q, k, v, causal, sm_scale, comm_mode):
                 num_warps=num_warps,
                 num_stages=4)
     return q, k, v, o, L
-
+@nvtx.annotate(color='yellow')
 def _lightseq_backward(do, q, k, v, o, L, sm_scale, comm_mode, backward_engine):
     BLOCK = 128
     q, k, v, o, do = [rearrange(_x, 'b h s d -> b s h d').contiguous() for _x in [q, k, v, o, do]]

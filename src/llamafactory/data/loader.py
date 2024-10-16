@@ -199,7 +199,8 @@ def get_dataset(
 
         if training_args.should_log:
             try:
-                print_function(next(iter(dataset)))
+                # print_function(next(iter(dataset))) 目前先不print
+                pass 
             except StopIteration:
                 if stage == "pt":
                     raise RuntimeError("Cannot find sufficient samples, consider increasing dataset size.")

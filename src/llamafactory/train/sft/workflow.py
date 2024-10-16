@@ -17,6 +17,7 @@ from .trainer import CustomSeq2SeqTrainer, CustomSeqParallelTrainer
 import torch
 import os
 from ...easy_context import apply_seq_parallel_monkey_patch # 使用easy context
+import nvtx 
 
 
 if TYPE_CHECKING:
@@ -33,12 +34,12 @@ def run_sft(
     generating_args: "GeneratingArguments",
     callbacks: Optional[List["TrainerCallback"]] = None,
 ):
+    training_args.save_strategy='no' # not save any checkpoint files.
     tokenizer_module = load_tokenizer(model_args)
     tokenizer = tokenizer_module["tokenizer"]
     dataset = get_dataset(model_args, data_args, training_args, stage="sft", **tokenizer_module)
     model = load_model(tokenizer, model_args, finetuning_args, training_args.do_train)
     apply_seq_parallel_monkey_patch(finetuning_args.parallel_mode, "llama", sp_size=finetuning_args.sp_size)
-    # 添加序列并行优化方式
 
     if training_args.predict_with_generate:
         tokenizer.padding_side = "left"  # use left-padding in generation

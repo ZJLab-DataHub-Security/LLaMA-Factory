@@ -40,7 +40,6 @@ def new_flash_attn_forward(
     rank = dist.get_rank()
     cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, locak_k_slice = \
         llama3_flash_attn_prepare_cu_seqlens(cu_seqlens= cu_seqlens,causal=causal, rank=dist.get_rank(),world_size = dist.get_world_size())
-    # sys.exit(0)
     attn_output = llama3_flash_attn_varlen_funcv2(
         rearrange(query_states,'b s a h -> (b s) a h'),
         rearrange(key_states,'b s a h -> (b s) a h'),

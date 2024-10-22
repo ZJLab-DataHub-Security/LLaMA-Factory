@@ -7,7 +7,7 @@ DATASET_PATH = '/nas/sunxiaofeng/LLaMA-Factory/data/sample_long_sft_32k_48M.json
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 from accelerate import Accelerator 
-from easy_context import apply_lss_transformer_attn_monkey_patch_llama
+from easy_context import apply_lss_transformer_attn_monkey_patch_llama, apply_llama3_flash_attn_attn_monkey_patch_llama
 accelerator = Accelerator()
 MAX_LENGTH = 2048
 def origin_forward(model, dataset, tokenizer):
@@ -39,28 +39,35 @@ def sp_forward(model, dataset, tokenizer,algorithm_name=None):
     position_ids = torch.arange(0, MAX_LENGTH, dtype=torch.long, device=accelerator.device).unsqueeze(0).expand(1, -1)
     if algorithm_name == "lss_transformer":
         apply_lss_transformer_attn_monkey_patch_llama()
-    
-    outputs = model(**inputs,output_hidden_states=True,position_ids=position_ids,past_key_values=None)
+    elif algorithm_name == 'llama3_flash_attn':
+        apply_llama3_flash_attn_attn_monkey_patch_llama()
+
+    if algorithm_name == "lss_transformer":    
+        outputs = model(**inputs,output_hidden_states=True,position_ids=position_ids,past_key_values=None)
+    elif algorithm_name == 'llama3_flash_attn':
+        outputs = model(**inputs,output_hidden_states=True,position_ids=position_ids[:,local_seq_length*rank:local_seq_length*(rank+1)],past_key_values=None)
     sp_result = outputs.logits
     intermediate_results = outputs.hidden_states if hasattr(outputs, 'hidden_states') else None 
     return sp_result.squeeze(0), intermediate_results
 
-def main():
+def main(algorithm_name = None):
     # load model and prepare data
     tokenizer = AutoTokenizer.from_pretrained(
         MODEL_PATH,
         pad_token = '<pad>'
     )
     dataset = load_dataset('json',data_files = DATASET_PATH)
-    model = AutoModelForCausalLM.from_pretrained(MODEL_PATH)
-
+    if algorithm_name != 'llama3_flash_attn':
+        model = AutoModelForCausalLM.from_pretrained(MODEL_PATH)
+    else: 
+        model = AutoModelForCausalLM.from_pretrained(MODEL_PATH,attn_implementation="flash_attention_2",torch_dtype=torch.bfloat16)
     rank = accelerator.state.process_index
     # origin model forward
     if rank == 0:
         origin_result, origin_inter = origin_forward(model,dataset,tokenizer) 
     
     # sp model forward
-    sp_result, sp_inters = sp_forward(model,dataset,tokenizer,algorithm_name="lss_transformer")
+    sp_result, sp_inters = sp_forward(model,dataset,tokenizer,algorithm_name=algorithm_name)
     all_sp_results = accelerator.gather(sp_result) 
     all_sp_inter = []
     for sp_inter in sp_inters:
@@ -76,4 +83,4 @@ def main():
         
 
 if __name__ == "__main__":
-    main()
+    main('llama3_flash_attn')

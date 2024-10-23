@@ -1,12 +1,10 @@
 import torch
 
-
 def extract_local(value, rank, world_size, device, dim=1):
     value_local = value.chunk(world_size, dim=dim)[rank]
     if device == None:
         return value_local
     return value_local.to(device)
-
 
 def prepare_llama3_flash_attn_inputs(
     input_ids, position_ids, target_ids, rank, world_size, device
@@ -38,7 +36,7 @@ def prepare_llama3_flash_attn_inputs(
         "local_target_ids": local_target_ids,
     }
 
-def prepare_llama3_flash_attn_sft_inputs(
+def prepare_ring_attn_sft_inputs(
     input_ids, attention_mask, position_ids, labels, rank, world_size, device
 ):
     local_input_ids = extract_local(

@@ -12,32 +12,27 @@ def new_flash_attn_forward(
     value_states,
     attention_mask,
     query_length=None,
-    is_causal = True,
     dropout=0.0,
-    position_ids = None,
     softmax_scale=None,
-    sliding_window : Optional[int] = None,
-    use_top_left_mask=False,
-    **kwargs 
+    use_sliding_windows=False,
+    group=None
 ):
     # if not self._flash_attn_uses_top_left_mask:
     #     causal = self.is_causal
     # else:
     #     causal = self.is_causal and query_length != 1
-
-    # Contains at least one padding token in the sequence
+    causal = True 
     # assert attention_mask is None
-    assert is_causal is True
-    # assert use_sliding_windows is False
-    assert query_states.dtype == key_states.dtype == value_states.dtype
-    # print(f"q dtype is {query_states.dtype}, k dtype is {key_states.dtype}, v dtype is {value_states.dtype}")
+    assert causal is True
+
     attn_output = ring_flash_attn_func(
         query_states,
         key_states,
         value_states,
         dropout,
         softmax_scale,
-        causal=is_causal,
+        causal=causal,
+        group=group
     )
     return attn_output
 
@@ -51,7 +46,6 @@ def new_decoder_forward(
     output_attentions: Optional[bool] = False,
     use_cache: Optional[bool] = False,
     cache_position: Optional[torch.LongTensor] = None,
-    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     **kwargs,
 ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
     assert isinstance(
@@ -69,7 +63,7 @@ def new_decoder_forward(
     residual = hidden_states
 
     hidden_states = self.input_layernorm(hidden_states)
-
+    assert hidden_states is not None
     # Self Attention
     hidden_states, self_attn_weights, present_key_value = self.self_attn(
         hidden_states=hidden_states,
@@ -120,7 +114,7 @@ def get_sp_process_group(sequence_parallel_size=None):
 
 def apply_ring_attn_monkey_patch_llama(sp_size=None):
     sp_group = get_sp_process_group(sp_size)
-    transformers.models.llama.modeling_llama._flash_attention_forward = (
+    transformers.models.llama.modeling_llama.LlamaFlashAttention2._flash_attention_forward = (
         partial(new_flash_attn_forward, group=sp_group)
     )
     transformers.models.llama.modeling_llama.LlamaDecoderLayer.forward = (

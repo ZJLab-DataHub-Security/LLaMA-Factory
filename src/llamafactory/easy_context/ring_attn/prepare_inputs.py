@@ -6,7 +6,7 @@ def extract_local(value, rank, world_size, device, dim=1):
         return value_local
     return value_local.to(device)
 
-def prepare_llama3_flash_attn_inputs(
+def prepare_ring_attn_inputs(
     input_ids, position_ids, target_ids, rank, world_size, device
 ):
     local_input_ids = extract_local(

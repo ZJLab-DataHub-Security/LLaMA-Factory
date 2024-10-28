@@ -8,6 +8,8 @@ from .ulysses_attn.prepare_inputs import prepare_ulysses_attn_inputs, prepare_ul
 from .ulysses_attn.monkey_patch import apply_ulysses_attn_monkey_patch_llama 
 from .ring_attn.monkey_patch import apply_ring_attn_monkey_patch_llama
 from .ring_attn.prepare_inputs import prepare_ring_attn_sft_inputs
+from .llama3_flash_attn.prepare_inputs import prepare_llama3_flash_attn_inputs, prepare_llama3_flash_attn_sft_inputs
+from .llama3_flash_attn.monkey_patch import apply_llama3_flash_attn_monkey_patch_llama
 import torch
 import torch.nn.functional as F
 
@@ -59,6 +61,14 @@ def prepare_seq_parallel_sft_inputs(
         return prepare_ulysses_attn_sft_inputs(
             input_ids, attention_mask, position_ids, shift_labels, rank, world_size, device
         )
+    elif seq_algo == 'ring_attn':
+        return prepare_ring_attn_sft_inputs(
+            input_ids, attention_mask, position_ids, shift_labels, rank, world_size, device
+        )
+    elif seq_algo == 'llama3_flash_attn':
+        return prepare_llama3_flash_attn_sft_inputs(
+            input_ids, attention_mask, position_ids, shift_labels, rank, world_size, device
+        )
     elif seq_algo == "data_parallel":
         return {
             "input_ids": input_ids,
@@ -66,17 +76,13 @@ def prepare_seq_parallel_sft_inputs(
             "attention_mask": attention_mask,
             "target_ids": labels,
         }
-    elif seq_algo == 'ring_attn':
-        return prepare_ring_attn_sft_inputs(
-            input_ids, attention_mask, position_ids, shift_labels, rank, world_size, device
-        )
     else:
         raise ValueError(f"Invalid seq_algo: {seq_algo}")
     
 def apply_seq_parallel_monkey_patch(
     seq_algo, model, sp_size=None, enable_offload=False, offload_percent=0.
 ):
-    assert seq_algo in ["zigzag_ring_attn", "dist_flash_attn", "ulysses_attn", "data_parallel","ring_attn"], f"Invalid seq_algo: {seq_algo}"
+    assert seq_algo in ["zigzag_ring_attn", "dist_flash_attn", "ulysses_attn", "data_parallel","ring_attn","llama3_flash_attn"], f"Invalid seq_algo: {seq_algo}"
     assert model in ["llama", "mistral"], f"Invalid model: {model}"
     if seq_algo == "data_parallel":
         return
@@ -90,6 +96,8 @@ def apply_seq_parallel_monkey_patch(
         apply_ulysses_attn_monkey_patch_llama(sp_size=sp_size)
     elif seq_algo == "ring_attn" and model == "llama":
         apply_ring_attn_monkey_patch_llama(sp_size=sp_size)
+    elif seq_algo == "llama3_flash_attn" and model == "llama":
+        apply_llama3_flash_attn_monkey_patch_llama(sp_size=sp_size) 
     else:
         raise ValueError(f"Invalid seq_algo: {seq_algo} or model: {model}")
         

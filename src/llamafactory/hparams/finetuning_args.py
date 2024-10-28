@@ -312,7 +312,7 @@ class FinetuningArguments(FreezeArguments, LoraArguments, RLHFArguments, GaloreA
         default=False,
         metadata={"help": "Whether or not to save the training loss curves."},
     )
-    parallel_mode: Literal["ring_attn","zigzag_ring_attn", "dist_flash_attn", "ulysses_attn", "data_parallel"] = field(
+    parallel_mode: Literal["ring_attn","zigzag_ring_attn", "dist_flash_attn", "ulysses_attn", "data_parallel","llama3_flash_attn"] = field(
         default="data_parallel",
         metadata={"help": "which sequence parallel mode to use."},
     )

@@ -3,9 +3,11 @@ from typing import List, Optional, Tuple, Union
 import warnings
 import torch
 import torch.utils.checkpoint
-from ring_flash_attn.ring_flash_attn import ring_flash_attn_func
+from ring_flash_attn.llama3_flash_attn_varlen import llama3_flash_attn_prepare_cu_seqlens, \
+    llama3_flash_attn_varlen_func
+from einops import rearrange
 from functools import partial
-
+import torch.distributed as dist 
 def new_flash_attn_forward(
     query_states,
     key_states,
@@ -13,7 +15,7 @@ def new_flash_attn_forward(
     attention_mask,
     query_length=None,
     dropout=0.0,
-    softmax_scale=None,
+    softmax_scale= None,
     use_sliding_windows=False,
     group=None
 ):
@@ -22,19 +24,51 @@ def new_flash_attn_forward(
     # else:
     #     causal = self.is_causal and query_length != 1
     causal = True 
+    # Contains at least one padding token in the sequence
     # assert attention_mask is None
     assert causal is True
-
-    attn_output = ring_flash_attn_func(
-        query_states,
-        key_states,
-        value_states,
+    # assert use_sliding_windows is False
+    local_s = query_states.shape[1] #[b,s,a,h]
+    cu_seqlens = torch.tensor([0,local_s*dist.get_world_size()]) # only for b == 1
+    # cu_seqlens = torch.tensor([i*local_s for i in range(dist.get_world_size()+1)])
+    rank = dist.get_rank()
+    cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, locak_k_slice = \
+        llama3_flash_attn_prepare_cu_seqlens(cu_seqlens= cu_seqlens,causal=causal, rank=dist.get_rank(),world_size = dist.get_world_size())
+    attn_output = llama3_flash_attn_varlen_func(
+        rearrange(query_states,'b s a h -> (b s) a h'),
+        rearrange(key_states,'b s a h -> (b s) a h'),
+        rearrange(value_states,'b s a h -> (b s) a h'),
+        cu_seqlens_q.to(dtype=torch.int32,device=f"cuda:{rank}"),
+        cu_seqlens_k.to(dtype=torch.int32,device=f"cuda:{rank}"),
+        max_seqlen_q,
+        max_seqlen_k,
+        1,
+        locak_k_slice,
         dropout,
         softmax_scale,
         causal=causal,
         group=group
     )
     return attn_output
+
+def get_sp_process_group(sequence_parallel_size=None):
+    if sequence_parallel_size is None:
+        return None
+    assert torch.distributed.is_initialized()
+    world_size: int = torch.distributed.get_world_size()
+    print(f"sequence_parallel_size is {sequence_parallel_size}, world_size is {world_size}")
+    if sequence_parallel_size is None or sequence_parallel_size == -1:
+        sequence_parallel_size = world_size
+    else:
+        assert world_size % sequence_parallel_size == 0
+    num_sequence_parallel_groups: int = world_size // sequence_parallel_size
+    rank = torch.distributed.get_rank()
+
+    for i in range(num_sequence_parallel_groups):
+        ranks = range(i * sequence_parallel_size, (i + 1) * sequence_parallel_size)
+        if rank in ranks:
+            group = torch.distributed.new_group(ranks)
+            return group
 
 
 def new_decoder_forward(
@@ -64,7 +98,7 @@ def new_decoder_forward(
 
     hidden_states = self.input_layernorm(hidden_states)
 
-    # Self Attention
+    # Self Attention    
     hidden_states, self_attn_weights, present_key_value = self.self_attn(
         hidden_states=hidden_states,
         attention_mask=attention_mask,
@@ -93,40 +127,14 @@ def new_decoder_forward(
 
     return outputs
 
-def get_sp_process_group(sequence_parallel_size=None):
-    if sequence_parallel_size is None:
-        return None
-    assert torch.distributed.is_initialized()
-    world_size: int = torch.distributed.get_world_size()
-    print(f"sequence_parallel_size is {sequence_parallel_size}, world_size is {world_size}")
-    if sequence_parallel_size is None or sequence_parallel_size == -1:
-        sequence_parallel_size = world_size
-    else:
-        assert world_size % sequence_parallel_size == 0
-    num_sequence_parallel_groups: int = world_size // sequence_parallel_size
-    rank = torch.distributed.get_rank()
 
-    for i in range(num_sequence_parallel_groups):
-        ranks = range(i * sequence_parallel_size, (i + 1) * sequence_parallel_size)
-        if rank in ranks:
-            group = torch.distributed.new_group(ranks)
-            return group
-
-def apply_ring_attn_monkey_patch_llama(sp_size=None):
-    sp_group = get_sp_process_group(sp_size)
+def apply_llama3_flash_attn_monkey_patch_llama(sp_size=None):
+    sp_group = get_sp_process_group(sequence_parallel_size=sp_size)
     transformers.models.llama.modeling_llama.LlamaFlashAttention2._flash_attention_forward = (
-        partial(new_flash_attn_forward, group=sp_group)
+        partial(new_flash_attn_forward,group=sp_group)
     )
     transformers.models.llama.modeling_llama.LlamaDecoderLayer.forward = (
         new_decoder_forward
     )
 
 
-def apply_ring_attn_monkey_patch_mistral(sp_size=None):
-    sp_group = get_sp_process_group(sp_size)
-    transformers.models.mistral.modeling_mistral.MistralFlashAttention2._flash_attention_forward = (
-        partial(new_flash_attn_forward, group=sp_group)
-    )
-    transformers.models.mistral.modeling_mistral.MistralDecoderLayer.forward = (
-        new_decoder_forward
-    )

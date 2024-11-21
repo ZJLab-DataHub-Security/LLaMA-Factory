@@ -13,6 +13,8 @@ _SEQUENCE_PARALLEL_GROUP = None
 _SEQUENCE_PARALLEL_SIZE = None
 _SEQUENCE_PARALLEL_RANK = None
 
+_SEQUENCE_PARALLEL_CACHE = {}
+
 # Global buffer for P2P
 _PEER_Q = None
 _PEER_K = None
@@ -57,6 +59,39 @@ def initialize_distributed(sp_size=None):
 
     _initialize_sequence_parallel(sp_size)
    # create_nccl_communicators()
+   
+def reset_sequence_parallel(sequence_parallel_size):
+    assert torch.distributed.is_initialized()
+    global _SEQUENCE_PARALLEL_GROUP
+    global _SEQUENCE_PARALLEL_RANK
+    global _SEQUENCE_PARALLEL_SIZE
+    if sequence_parallel_size in _SEQUENCE_PARALLEL_CACHE:
+        cache = _SEQUENCE_PARALLEL_CACHE[sequence_parallel_size]
+        _SEQUENCE_PARALLEL_GROUP = cache['GROUP']
+        _SEQUENCE_PARALLEL_RANK = cache['RANK']
+        _SEQUENCE_PARALLEL_SIZE = cache['SIZE']
+    else:
+        world_size: int = torch.distributed.get_world_size()
+        num_sequence_parallel_groups: int = world_size // sequence_parallel_size
+        rank = torch.distributed.get_rank()
+
+        # Build the sequence parallel groups.
+        for i in range(num_sequence_parallel_groups):
+            ranks = range(i * sequence_parallel_size, (i + 1) * sequence_parallel_size)
+            group = torch.distributed.new_group(ranks)
+            if rank in ranks:
+                GROUP = group
+                RANK = ranks.index(rank)
+                SIZE = len(ranks)
+                _SEQUENCE_PARALLEL_CACHE[sequence_parallel_size] = {
+                    'GROUP': GROUP,
+                    'RANK': RANK,
+                    'SIZE': SIZE,
+                }
+                _SEQUENCE_PARALLEL_GROUP = GROUP
+                _SEQUENCE_PARALLEL_RANK = RANK
+                _SEQUENCE_PARALLEL_SIZE = SIZE
+    reset_global_memory_buffer()
 
 def _initialize_sequence_parallel(sequence_parallel_size=None):
     # Get world size and rank. Ensure some consistencies.
@@ -96,11 +131,11 @@ def _initialize_sequence_parallel(sequence_parallel_size=None):
 def maybe_get_set_global_memory_buffer(q, k, v, m, l, o):
     global _PEER_Q, _PEER_K, _PEER_V, _PEER_M, _PEER_L, _PEER_O
     if _PEER_Q is None:
-        try:
-            if get_sequence_parallel_rank() == 0:
-                print("Initializing global memoery buffer.")
-        except:
-            print("Initializing global memoery buffer.")
+        # try:
+        #     if get_sequence_parallel_rank() == 0:
+        #         print("Initializing global memoery buffer.")
+        # except:
+        #     print("Initializing global memoery buffer.")
         _PEER_Q = [torch.empty_like(q) for _ in range(2)]
         _PEER_K = [torch.empty_like(k) for _ in range(2)]
         _PEER_V = [torch.empty_like(v) for _ in range(2)]
@@ -113,26 +148,25 @@ def maybe_get_set_global_memory_buffer(q, k, v, m, l, o):
 def maybe_get_set_global_memory_buffer_bwd(dq, dk, dv, q, L, k, v, o, do):
     global _DELTA_DQ, _DELTA_DK, _DELTA_DV, _DK_DELTA_FROM_PEER, _DV_DELTA_FROM_PEER,_PEER_Q_BWD, _PEER_L, _PEER_K_BWD, _PEER_V_BWD, _PEER_O_BWD, _PEER_DO
     if _DELTA_DQ is None:
-        try:
-            if get_sequence_parallel_rank() == 0:
-                print("Initializing global memoery buffer for backward.")
-        except:
-            print("Initializing global memoery buffer for backward.")
+        # try:
+        #     if get_sequence_parallel_rank() == 0:
+        #         print("Initializing global memoery buffer for backward.")
+        # except:
+        #     print("Initializing global memoery buffer for backward.")
         _DELTA_DQ = [torch.empty_like(dq) for _ in range(2)]
         _DELTA_DK = [torch.empty_like(dk) for _ in range(2)]
         _DELTA_DV = [torch.empty_like(dv) for _ in range(2)]
         _PEER_L = [torch.empty_like(L) for _ in range(2)]
-        
+
         _DK_DELTA_FROM_PEER = torch.empty_like(dk)
         _DV_DELTA_FROM_PEER = torch.empty_like(dv)
-
         # may already be initailized in the forward call.
         # current forward and backward needs a transpose in q's format
         _PEER_Q_BWD = [torch.empty_like(q) for _ in range(2)]
         _PEER_K_BWD = [torch.empty_like(k) for _ in range(2)]
         _PEER_V_BWD = [torch.empty_like(v) for _ in range(2)]
         _PEER_O_BWD = [torch.empty_like(o) for _ in range(2)]
-            
+
         _PEER_DO = [torch.empty_like(do) for _ in range(2)]
 
     return _DELTA_DQ, _DELTA_DK, _DELTA_DV, _DK_DELTA_FROM_PEER, _DV_DELTA_FROM_PEER,  _PEER_Q_BWD, _PEER_L, _PEER_K_BWD, _PEER_V_BWD, _PEER_O_BWD, _PEER_DO

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Dict, Sequence
+import math
 
 import torch
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
@@ -121,6 +122,31 @@ class SeqParallelDataCollator(DataCollatorForSeq2Seq):
                                                 device=self.device)
         return batch
 
+@dataclass
+class DynamicSeqParallelDataCollator(DataCollatorForSeq2Seq):
+    r"""
+    Data collator for dynamic sequence parallel in supervised finetune(sft) stage.
+    """
+    seq_algo: str = "dist_flash_attn",
+    seqlen_per_gpu: int = 4096
+    cutoff_len: int = 32768
+    rank: int = 0
+    world_size: int = 8
+    dp_factor: int = 1
+    device: Optional[Any] = None
+
+    def __call__(self, features, return_tensors=None):
+        eps = 1e-5
+        mini_bs = len(features) // self.dp_factor
+        max_size = int(math.log2(self.cutoff_len // self.seqlen_per_gpu)+eps)
+        data = [[] for _ in range(max_size+1)]
+        for dp_group in range(self.dp_factor):
+            batch = super().__call__(features[dp_group*mini_bs : (dp_group+1)*mini_bs], return_tensors)
+            new_labels = torch.concat([batch['labels'], self.label_pad_token_id * torch.ones([batch['labels'].shape[0], batch['input_ids'].shape[1]-batch['labels'].shape[1]], dtype=batch['labels'].dtype, device=batch['labels'].device)], axis=1)
+            batch['labels'] = new_labels
+            dp_rank = int(math.log2(batch['input_ids'].shape[1] // self.seqlen_per_gpu)+eps)
+            data[dp_rank].append(batch)
+        return data
 
 @dataclass
 class SeqParallelDataCollatorForLanguageModeling(DataCollatorForLanguageModeling):

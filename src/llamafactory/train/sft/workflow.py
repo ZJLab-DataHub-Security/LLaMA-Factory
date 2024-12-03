@@ -5,18 +5,20 @@ from typing import TYPE_CHECKING, List, Optional
 from transformers import DataCollatorForSeq2Seq
 
 from ...data import get_dataset, split_dataset
-from ...data.collator import SeqParallelDataCollator
+from ...data.collator import SeqParallelDataCollator, DynamicSeqParallelDataCollator
 from ...extras.constants import IGNORE_INDEX
 from ...extras.misc import get_logits_processor
 from ...extras.ploting import plot_loss
 from ...model import load_model, load_tokenizer
 from ..trainer_utils import create_modelcard_and_push
 from .metric import ComputeMetrics
-from .trainer import CustomSeq2SeqTrainer, CustomSeqParallelTrainer
+from .trainer import CustomSeq2SeqTrainer, CustomSeqParallelTrainer, DynamicSequenceParallelDataLoader, DynamicSeqParallelTrainer
 
 import torch
 import os
 from ...easy_context import apply_seq_parallel_monkey_patch
+from types import MethodType
+from ..trainer_utils import _new_pad
 
 
 if TYPE_CHECKING:
@@ -35,6 +37,12 @@ def run_sft(
 ):
     tokenizer_module = load_tokenizer(model_args)
     tokenizer = tokenizer_module["tokenizer"]
+
+    num_pad_to_multiple_of = data_args.cutoff_len
+    if finetuning_args.enable_dynamic_sp:
+        tokenizer._pad = MethodType(_new_pad, tokenizer)
+        num_pad_to_multiple_of = finetuning_args.seqlen_per_gpu
+
     dataset = get_dataset(model_args, data_args, training_args, stage="sft", **tokenizer_module)
     model = load_model(tokenizer, model_args, finetuning_args, training_args.do_train)
     apply_seq_parallel_monkey_patch(finetuning_args.parallel_mode, "llama", sp_size=finetuning_args.sp_size, enable_offload=finetuning_args.sp_enable_offload, offload_percent=finetuning_args.sp_offload_percent)
@@ -48,32 +56,59 @@ def run_sft(
     local_rank = int(os.getenv("LOCAL_RANK"))
     world_size = torch.distributed.get_world_size()
     print(f"seq_len: {data_args.cutoff_len}")
-    data_collator = SeqParallelDataCollator(
-        tokenizer=tokenizer,
-        pad_to_multiple_of=data_args.cutoff_len if tokenizer.padding_side == "right" else None,
-        label_pad_token_id=IGNORE_INDEX if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id,
-        seq_algo=finetuning_args.parallel_mode,
-        sp_size=finetuning_args.sp_size,
-        rank=torch.distributed.get_rank(),
-        world_size=world_size,
-        device=torch.device("cuda", local_rank)
-    )
+    if finetuning_args.enable_dynamic_sp:
+        dp_factor = finetuning_args.total_batch_size // training_args.gradient_accumulation_steps // training_args.train_batch_size
+        data_collator = DynamicSeqParallelDataCollator(
+            tokenizer=tokenizer,
+            pad_to_multiple_of=num_pad_to_multiple_of,
+            label_pad_token_id=IGNORE_INDEX if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id,
+            seq_algo=finetuning_args.parallel_mode,
+            seqlen_per_gpu=finetuning_args.seqlen_per_gpu,
+            cutoff_len=data_args.cutoff_len,
+            dp_factor=dp_factor,
+            rank=torch.distributed.get_rank(),
+            world_size=world_size,
+            device=torch.device("cuda", local_rank)
+        )
+    else:
+        data_collator = SeqParallelDataCollator(
+            tokenizer=tokenizer,
+            pad_to_multiple_of=num_pad_to_multiple_of,
+            label_pad_token_id=IGNORE_INDEX if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id,
+            seq_algo=finetuning_args.parallel_mode,
+            sp_size=finetuning_args.sp_size,
+            rank=torch.distributed.get_rank(),
+            world_size=world_size,
+            device=torch.device("cuda", local_rank)
+        )
     # Override the decoding parameters of Seq2SeqTrainer
     training_args.generation_max_length = training_args.generation_max_length or data_args.cutoff_len
     training_args.generation_num_beams = data_args.eval_num_beams or training_args.generation_num_beams
     training_args.remove_unused_columns = False if model_args.visual_inputs else training_args.remove_unused_columns
 
     # Initialize our Trainer
-    trainer = CustomSeqParallelTrainer(
-        model=model,
-        args=training_args,
-        finetuning_args=finetuning_args,
-        data_collator=data_collator,
-        callbacks=callbacks,
-        compute_metrics=ComputeMetrics(tokenizer) if training_args.predict_with_generate else None,
-        **tokenizer_module,
-        **split_dataset(dataset, data_args, training_args),
-    )
+    if finetuning_args.enable_dynamic_sp:
+        trainer = DynamicSeqParallelTrainer(
+            model=model,
+            args=training_args,
+            finetuning_args=finetuning_args,
+            data_collator=data_collator,
+            callbacks=callbacks,
+            compute_metrics=ComputeMetrics(tokenizer) if training_args.predict_with_generate else None,
+            **tokenizer_module,
+            **split_dataset(dataset, data_args, training_args),
+        )
+    else:
+        trainer = CustomSeqParallelTrainer(
+            model=model,
+            args=training_args,
+            finetuning_args=finetuning_args,
+            data_collator=data_collator,
+            callbacks=callbacks,
+            compute_metrics=ComputeMetrics(tokenizer) if training_args.predict_with_generate else None,
+            **tokenizer_module,
+            **split_dataset(dataset, data_args, training_args),
+        )
 
     # Keyword arguments for `model.generate`
     gen_kwargs = generating_args.to_dict()

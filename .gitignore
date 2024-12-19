@@ -4,7 +4,9 @@
 *llmtuner*
 /wandb/
 /examples/
-/data/
+*.sh
+data*
+!/data/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

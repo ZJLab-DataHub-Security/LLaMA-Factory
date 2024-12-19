@@ -312,7 +312,11 @@ class FinetuningArguments(FreezeArguments, LoraArguments, RLHFArguments, GaloreA
         default=False,
         metadata={"help": "Whether or not to save the training loss curves."},
     )
-    parallel_mode: Literal["zigzag_ring_attn", "dist_flash_attn", "ulysses_attn", "data_parallel"] = field(
+    record_ppl: bool = field(
+        default=False,
+        metadata={"help": "whether to record the perplexity. Can only be used when learning rate is 0."},
+    )
+    parallel_mode: Literal["zigzag_ring_attn", "zigzag_ring_attn_varlen", "dist_flash_attn", "ulysses_attn", "data_parallel"] = field(
         default="data_parallel",
         metadata={"help": "which sequence parallel mode to use."},
     )
@@ -320,15 +324,7 @@ class FinetuningArguments(FreezeArguments, LoraArguments, RLHFArguments, GaloreA
         default=-1,
         metadata={
             "help": "allow using seq_parallel and data_parallel simultaneously, -1 for all gpus parallels in sequence_length axis, n for n_gpus makes a sequence_parallel group"
-        },
-    )
-    sp_enable_offload: bool = field(
-        default=False,
-        metadata={"help": "whether enable offload activation to cpu for dist_flash_attn"},
-    )
-    sp_offload_percent: float = field(
-        default=0.0,
-        metadata={"help": "0 for remain all activation memory in gpu, 1 for offload all activation memory in cpu"}
+        }
     )
 
     def __post_init__(self):

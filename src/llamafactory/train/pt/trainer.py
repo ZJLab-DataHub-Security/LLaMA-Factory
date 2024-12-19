@@ -1,15 +1,18 @@
 from types import MethodType
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 
 from transformers import Trainer
 
 from ...extras.logging import get_logger
 from ..trainer_utils import create_custom_optimzer, create_custom_scheduler
 import torch
-from torch.utils.data import DataLoader
-from transformers.utils import is_datasets_available
+from torch.utils.data import DataLoader, SequentialSampler
+from transformers.utils import is_datasets_available, is_sagemaker_mp_enabled, is_apex_available, is_accelerate_available
 from transformers.trainer_utils import seed_worker
+from transformers.training_args import OptimizerNames
+from transformers.trainer_pt_utils import _get_learning_rate
 import datasets
+from torch import nn
 from torch.nn import CrossEntropyLoss
 import os
 
@@ -19,6 +22,36 @@ if TYPE_CHECKING:
 
     from ...hparams import FinetuningArguments
 
+if is_sagemaker_mp_enabled():
+    import smdistributed.modelparallel.torch as smp
+    from smdistributed.modelparallel import __version__ as SMP_VERSION
+
+    IS_SAGEMAKER_MP_POST_1_10 = version.parse(SMP_VERSION) >= version.parse("1.10")
+
+    from .trainer_pt_utils import smp_forward_backward, smp_forward_only, smp_gather, smp_nested_concat
+else:
+    IS_SAGEMAKER_MP_POST_1_10 = False
+
+if is_apex_available():
+    from apex import amp  
+
+if is_accelerate_available():
+    from accelerate import Accelerator, skip_first_batches
+    from accelerate import __version__ as accelerate_version
+    from accelerate.utils import (
+        DistributedDataParallelKwargs,
+        DistributedType,
+        GradientAccumulationPlugin,
+        is_mlu_available,
+        is_mps_available,
+        is_npu_available,
+        is_torch_version,
+        is_xpu_available,
+        load_fsdp_model,
+        load_fsdp_optimizer,
+        save_fsdp_model,
+        save_fsdp_optimizer,
+    )
 
 logger = get_logger(__name__)
 
@@ -91,7 +124,7 @@ class CustomSeqParallelTrainer(CustomTrainer):
                     f"{','.join(outputs.keys())}. For reference, the inputs it received are {','.join(inputs.keys())}."
                 )
             # We don't use .loss here since the model may return tuples instead of ModelOutput.
-            if self.finetuning_args.parallel_mode== "data_parallel":
+            if self.finetuning_args.parallel_mode == "data_parallel":
                 loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
 
             else:
@@ -113,9 +146,118 @@ class CustomSeqParallelTrainer(CustomTrainer):
                 for b in range(bs):
                     normalizer=valid_label_cnt_all[b].item()
                     loss[b]=loss_fn(shift_logits[b], shift_labels[b])/normalizer
+                if self.finetuning_args.record_ppl:
+                    return (loss, outputs) if return_outputs else loss
+
                 loss = loss.mean()*sp_size
 
         return (loss, outputs) if return_outputs else loss
+
+    def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
+        """
+        Perform a training step on a batch of inputs.
+
+        Subclass and override to inject custom behavior.
+
+        Args:
+            model (`nn.Module`):
+                The model to train.
+            inputs (`Dict[str, Union[torch.Tensor, Any]]`):
+                The inputs and targets of the model.
+
+                The dictionary will be unpacked before being fed to the model. Most models expect the targets under the
+                argument `labels`. Check your model's documentation for all accepted arguments.
+
+        Return:
+            `torch.Tensor`: The tensor with training loss on this batch.
+        """
+        model.train()
+        inputs = self._prepare_inputs(inputs)
+        if is_sagemaker_mp_enabled():
+            loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
+            return loss_mb.reduce_mean().detach().to(self.args.device)
+
+        with self.compute_loss_context_manager():
+            loss = self.compute_loss(model, inputs)
+
+        if self.finetuning_args.record_ppl and self.args.learning_rate >0:
+            raise ValueError('learning rate should be 0 when recording perplexity.')
+        
+        if self.finetuning_args.record_ppl and self.finetuning_args.parallel_mode == "data_parallel":
+            raise ValueError('record_ppl is not supported in data_parallel mode.')
+
+        if self.finetuning_args.record_ppl and self.finetuning_args.parallel_mode != "data_parallel":
+            sp_size = self.finetuning_args.sp_size
+            if sp_size == -1:
+                sp_size = torch.distributed.get_world_size()
+            dp_rank = self.accelerator.process_index // sp_size
+            dp_size = torch.distributed.get_world_size() // sp_size
+            print(inputs.keys())
+            inputs_tensor = inputs['input_ids']
+
+            gathered_inputs = [torch.zeros_like(inputs_tensor) for _ in range(torch.distributed.get_world_size())]
+            # 调用 all_gather 来收集所有进程的 loss 张量
+            torch.distributed.all_gather(gathered_inputs, inputs_tensor)
+            dp_inputs = [torch.concatenate(gathered_inputs[dp_rank*sp_size:(dp_rank+1)*sp_size], dim=1) for dp_rank in range(dp_size)]
+            
+            gathered_losses = [torch.zeros_like(loss) for _ in range(torch.distributed.get_world_size())]
+            
+            # 调用 all_gather 来收集所有进程的 loss 张量
+            torch.distributed.all_gather(gathered_losses, loss)
+            
+            dp_losses = [torch.stack(gathered_losses, dim=0)[dp_rank*sp_size:(dp_rank+1)*sp_size].sum(0) for dp_rank in range(dp_size)]
+            # 每个sp组有size为[bs]的loss
+            real_loss = torch.stack(dp_losses, dim=0).mean(1)[dp_rank]
+            print(f"loss after sp:{real_loss}, rank:{os.getenv('RANK')}")
+            
+            # 返回一个虚假loss，用于计算梯度
+            loss = loss.mean()
+            model_path = os.getenv('MODEL_DIR').split('/')[-1]
+            seq_len=os.getenv('SEQ_LEN',"default_length")
+            f = open(f'/mnt/zj-gpfs/home/lsy/eval/{model_path}_{seq_len}_ppl.jsonl','a')
+            import json
+            if torch.distributed.get_rank() == 0:
+                dp_inputs = torch.stack(dp_inputs, dim=0)
+                dp_inputs = list(torch.split(dp_inputs.view(-1, dp_inputs.shape[-1]),1,0))
+                dp_inputs = [item.squeeze() for item in dp_inputs]
+                dp_losses = torch.concatenate(dp_losses,-1).tolist()
+                dict_list = [{'sp_rank':i,'loss':dp_losses[i],'inputs':dp_inputs[i].tolist()} for i in range(len(dp_inputs))]
+                
+                f.write("\n".join(json.dumps(item) for item in dict_list)+"\n")
+                f.flush()
+
+        del inputs
+        if (
+            self.args.torch_empty_cache_steps is not None
+            and self.state.global_step % self.args.torch_empty_cache_steps == 0
+        ):
+            if is_xpu_available():
+                torch.xpu.empty_cache()
+            elif is_mlu_available():
+                torch.mlu.empty_cache()
+            elif is_npu_available():
+                torch.npu.empty_cache()
+            elif is_torch_version(">=", "2.0") and is_mps_available():
+                torch.mps.empty_cache()
+            else:
+                torch.cuda.empty_cache()
+
+        kwargs = {}
+
+        # For LOMO optimizers you need to explicitly use the learnign rate
+        if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+            kwargs["learning_rate"] = self._get_learning_rate()
+
+        if self.args.n_gpu > 1:
+            loss = loss.mean()  # mean() to average on multi-gpu parallel training
+
+        if self.use_apex:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            self.accelerator.backward(loss, **kwargs)
+
+        return loss.detach() / self.args.gradient_accumulation_steps
 
     def get_train_dataloader(self) -> DataLoader:
         """
@@ -145,6 +287,9 @@ class CustomSeqParallelTrainer(CustomTrainer):
         }
 
         if not isinstance(train_dataset, torch.utils.data.IterableDataset):
+            # if self.finetuning_args.record_ppl:
+            #     dataloader_params["sampler"] = SequentialSampler
+            # else:
             dataloader_params["sampler"] = self._get_train_sampler()
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["worker_init_fn"] = seed_worker
@@ -158,6 +303,7 @@ class CustomSeqParallelTrainer(CustomTrainer):
                 dp_size = world_size // sp_size
                 dataloader_params["batch_size"] = dataloader_params["batch_size"] * dp_size
             return DataLoader(train_dataset, **dataloader_params)
+            
         return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
     
     def get_eval_dataloader(self, eval_dataset) -> DataLoader:

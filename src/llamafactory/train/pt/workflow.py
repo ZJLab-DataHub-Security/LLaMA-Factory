@@ -28,6 +28,9 @@ def run_pt(
     finetuning_args: "FinetuningArguments",
     callbacks: Optional[List["TrainerCallback"]] = None,
 ):
+    assert transformers.__version__=="4.47.0", "this version only compatible to transformers==4.47.0, please execute pip install transformers==4.47.0"
+    assert finetuning_args.parallel_mode != "zigzag_ring_attn_varlen", "zigzag_ring_attn_varlen is not recommanded for continued pre-training, please choose from data_parallel, dist_flash_attn and" \
+                                            "zigzag_ring_attn"
     tokenizer_module = load_tokenizer(model_args)
     tokenizer = tokenizer_module["tokenizer"]
     dataset = get_dataset(model_args, data_args, training_args, stage="pt", **tokenizer_module)

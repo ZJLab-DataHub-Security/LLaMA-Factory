@@ -11,7 +11,9 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import DataCollatorForLanguageModeling, DataCollatorForSeq2Seq
-
+import sys
+import os
+sys.path.append(f"{os.getcwd()}/src")
 from llamafactory.data import get_dataset
 from llamafactory.extras.constants import IGNORE_INDEX
 from llamafactory.hparams import get_train_args
@@ -55,6 +57,7 @@ def cal_ppl(
     cutoff_len: int = 1024,
     max_samples: Optional[int] = None,
     train_on_prompt: bool = False,
+    **kwargs
 ):
     model_args, data_args, training_args, finetuning_args, _ = get_train_args(
         dict(
@@ -68,6 +71,7 @@ def cal_ppl(
             train_on_prompt=train_on_prompt,
             output_dir="dummy_dir",
             overwrite_cache=True,
+            **kwargs
         )
     )
     tokenizer_module = load_tokenizer(model_args)

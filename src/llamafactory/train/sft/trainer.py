@@ -9,11 +9,12 @@ from transformers import Seq2SeqTrainer
 
 from ...extras.constants import IGNORE_INDEX
 from ...extras.logging import get_logger
-from ...extras.sampler import DynamicBatchSampler
+# from ...extras.sampler import DynamicBatchSampler
 from ..trainer_utils import create_custom_optimzer, create_custom_scheduler
 from torch.utils.data import DataLoader
 from transformers.utils import (is_datasets_available, is_torch_xpu_available, is_torch_mlu_available, 
-                                is_torch_musa_available, is_torch_npu_available, is_torch_mps_available)
+                                is_torch_musa_available, is_torch_npu_available, is_torch_mps_available,
+                                is_apex_available)
 from transformers.training_args import OptimizerNames
 from transformers.trainer_utils import seed_worker
 import datasets
@@ -24,9 +25,10 @@ from torch.nn import CrossEntropyLoss
 if TYPE_CHECKING:
     from transformers import ProcessorMixin
     from transformers.trainer import PredictionOutput
-
     from ...hparams import FinetuningArguments
-
+    
+if is_apex_available():
+    from apex import amp
 
 logger = get_logger(__name__)
 
@@ -142,64 +144,6 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
 
 class CustomSeqParallelTrainer(CustomSeq2SeqTrainer):
 
-    def compute_loss_old(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        """
-        How the loss is computed by Trainer. By default, all models return the loss in the first element.
-
-        Subclass and override for custom behavior.
-        """
-        from transformers.trainer import _is_peft_model, MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
-        if self.label_smoother is not None and "labels" in inputs:
-            labels = inputs.pop("labels")
-        else:
-            labels = None
-        outputs = model(**inputs)
-        # Save past state if it exists
-        # TODO: this needs to be fixed and made cleaner later.
-        if self.args.past_index >= 0:
-            self._past = outputs[self.args.past_index]
-
-        if labels is not None:
-            unwrapped_model = self.accelerator.unwrap_model(model)
-            if _is_peft_model(unwrapped_model):
-                model_name = unwrapped_model.base_model.model._get_name()
-            else:
-                model_name = unwrapped_model._get_name()
-            if model_name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.values():
-                loss = self.label_smoother(outputs, labels, shift_labels=True)
-            else:
-                loss = self.label_smoother(outputs, labels)
-        else:
-            if isinstance(outputs, dict) and "loss" not in outputs:
-                raise ValueError(
-                    "The model did not return a loss from the inputs, only the following keys: "
-                    f"{','.join(outputs.keys())}. For reference, the inputs it received are {','.join(inputs.keys())}."
-                )
-            # We don't use .loss here since the model may return tuples instead of ModelOutput.
-            if self.finetuning_args.parallel_mode== "data_parallel":
-                loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
-            else:
-                sp_size = self.finetuning_args.sp_size
-                loss_fn = CrossEntropyLoss(reduction='sum')
-                labels = inputs.pop("labels")
-                logits = outputs["logits"] if isinstance(outputs, dict) else outputs[1]
-                valid_label_cnt = (labels!=-100).sum(1)[None, :]
-                valid_label_cnt_gather = self.accelerator.gather(valid_label_cnt)
-                n_gpus = valid_label_cnt_gather.shape[0]
-                if sp_size == -1:
-                    sp_size = n_gpus
-                dp_rank = self.accelerator.process_index // sp_size
-                valid_label_cnt_all =valid_label_cnt_gather[dp_rank * sp_size : (dp_rank+1) * sp_size].sum(0).detach()
-                shift_logits = logits.contiguous()
-                shift_labels = labels.contiguous()
-                bs = len(shift_labels)
-                loss = torch.zeros(bs, dtype=shift_logits.dtype, device=shift_labels.device)
-                for b in range(bs):
-                    normalizer=valid_label_cnt_all[b].item()
-                    loss[b]=loss_fn(shift_logits[b], shift_labels[b])/normalizer
-                loss = loss.mean()*sp_size
-
-        return (loss, outputs) if return_outputs else loss
 
     def training_step(
         self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], num_items_in_batch=None

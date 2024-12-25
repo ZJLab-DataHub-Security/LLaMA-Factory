@@ -82,7 +82,7 @@ def apply_seq_parallel_monkey_patch(
     elif seq_algo == "zigzag_ring_attn_varlen" and model == "llama":
         apply_zigzag_ring_attn_varlen_monkey_patch_llama(sp_size=sp_size)
     elif seq_algo == "dist_flash_attn" and model == "llama":
-        apply_dist_flash_attn_monkey_patch_llama(sp_size=sp_size)
+        apply_dist_flash_attn_monkey_patch_llama(sp_size=sp_size, enable_offload=enable_offload, offload_percent=offload_percent)
     elif seq_algo == "ulysses_attn" and model == "llama":
         apply_ulysses_attn_monkey_patch_llama(sp_size=sp_size)
     else:

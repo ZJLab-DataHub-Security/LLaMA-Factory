@@ -99,7 +99,7 @@ class Template:
                 elements += self.format_function.apply(content=message["content"])
             else:
                 raise NotImplementedError("Unexpected role: {}".format(message["role"]))
-
+            
             encoded_messages.append(self._convert_elements_to_ids(tokenizer, elements))
 
         return self._make_pairs(encoded_messages, cutoff_len, reserved_label_len)
@@ -149,7 +149,6 @@ class Template:
             target_ids = encoded_messages[i + 1][:max_target_len]
             total_length += len(source_ids) + len(target_ids)
             encoded_pairs.append((source_ids, target_ids))
-
         return encoded_pairs
 
 
@@ -340,6 +339,7 @@ def _get_jinja_template(template: "Template", tokenizer: "PreTrainedTokenizer") 
     jinja_template += "{{ " + assistant_message + " }}"
     jinja_template += "{% endif %}"
     jinja_template += "{% endfor %}"
+    # print(f"jinja_template:{jinja_template}")
     return jinja_template
 
 
@@ -378,7 +378,9 @@ def get_template_and_fix_tokenizer(
             logger.warning("New tokens have been added, make sure `resize_vocab` is True.")
 
     try:
-        tokenizer.chat_template = _get_jinja_template(template, tokenizer)
+        #tokenizer.chat_template = _get_jinja_template(template, tokenizer)
+        chat_template = _get_jinja_template(template, tokenizer)
+        tokenizer.pad_token = tokenizer.eos_token
     except ValueError:
         logger.info("Cannot add this chat template to tokenizer.")
 

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Literal, Optional, Union
 
 import numpy as np
 from datasets import load_dataset, load_from_disk
+import torch.distributed as dist
 
 from ..extras.constants import FILEEXT2TYPE
 from ..extras.logging import get_logger
@@ -91,7 +92,8 @@ def load_single_dataset(
             kwargs = {"trust_remote_code": True}
         else:
             kwargs = {}
-
+        import datasets
+        datasets.builder.has_sufficient_disk_space = lambda needed_bytes, directory='.': True
         dataset = load_dataset(
             path=data_path,
             name=data_name,
@@ -134,27 +136,24 @@ def get_dataset(
     tokenizer: "PreTrainedTokenizer",
     processor: Optional["ProcessorMixin"] = None,
 ) -> Union["Dataset", "IterableDataset"]:
+    
+
     template = get_template_and_fix_tokenizer(tokenizer, data_args.template)
     if data_args.train_on_prompt and template.efficient_eos:
         raise ValueError("Current template does not support `train_on_prompt`.")
 
     # Load tokenized dataset
+    #print(f"tokenized_path:{data_args.tokenized_path}")
     if data_args.tokenized_path is not None:
         if has_tokenized_data(data_args.tokenized_path):
             logger.warning("Loading dataset from disk will ignore other data arguments.")
-            dataset = load_from_disk(data_args.tokenized_path)
-            # ---lsy---
-            to_remove = [col for col in dataset.column_names if col != "input_ids"]
-            # import copy
-            # first_item = copy.deepcopy(dataset[0]['input_ids'])
-            def update_column(example):
-                example['input_ids'] = example['input_ids'][:data_args.cutoff_len]
-                # example['input_ids'] = first_item[:data_args.cutoff_len]
-                return example
+            if dist.get_rank() != 0:
+                dist.barrier()
 
-            # # 使用 map 方法添加新列
-            dataset = dataset.map(update_column,remove_columns=to_remove)
-            # ---lsy---
+            dataset = load_from_disk(data_args.tokenized_path)
+            if dist.get_rank() == 0:
+                dist.barrier()
+
             logger.info("Loaded tokenized dataset from {}.".format(data_args.tokenized_path))
             if data_args.streaming:
                 dataset = dataset.to_iterable_dataset()
@@ -163,6 +162,7 @@ def get_dataset(
         if data_args.streaming:
             raise ValueError("Turn off `streaming` when saving dataset to disk.")
 
+    
     with training_args.main_process_first(desc="load dataset"):
         all_datasets = []
         for dataset_attr in get_dataset_list(data_args):

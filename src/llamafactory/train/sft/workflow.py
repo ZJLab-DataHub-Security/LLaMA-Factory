@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, List, Optional
 from transformers import DataCollatorForSeq2Seq
 
 from ...data import get_dataset, split_dataset
-from ...data.collator import SeqParallelDataCollator
+from ...data.collator import SeqParallelDataCollator, SeqParallelDataCollatorWithFlattening
 from ...extras.constants import IGNORE_INDEX
 from ...extras.misc import get_logits_processor
 from ...extras.ploting import plot_loss
@@ -35,6 +35,8 @@ def run_sft(
 ):
     tokenizer_module = load_tokenizer(model_args)
     tokenizer = tokenizer_module["tokenizer"]
+    if tokenizer.slow_tokenizer_class =="Qwen2Tokenizer":
+        tokenizer.eos_token = "<|endoftext|>"
     dataset = get_dataset(model_args, data_args, training_args, stage="sft", **tokenizer_module)
     model = load_model(tokenizer, model_args, finetuning_args, training_args.do_train)
     apply_seq_parallel_monkey_patch(finetuning_args.parallel_mode, "llama", sp_size=finetuning_args.sp_size, enable_offload=finetuning_args.sp_enable_offload, offload_percent=finetuning_args.sp_offload_percent)
@@ -48,16 +50,26 @@ def run_sft(
     local_rank = int(os.getenv("LOCAL_RANK"))
     world_size = torch.distributed.get_world_size()
     print(f"seq_len: {data_args.cutoff_len}")
-    data_collator = SeqParallelDataCollator(
-        tokenizer=tokenizer,
-        pad_to_multiple_of=data_args.cutoff_len if tokenizer.padding_side == "right" else None,
-        label_pad_token_id=IGNORE_INDEX if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id,
-        seq_algo=finetuning_args.parallel_mode,
-        sp_size=finetuning_args.sp_size,
-        rank=torch.distributed.get_rank(),
-        world_size=world_size,
-        device=torch.device("cuda", local_rank)
-    )
+    if finetuning_args.parallel_mode == "zigzag_ring_attn_varlen":
+        data_collator = SeqParallelDataCollatorWithFlattening(
+            tokenizer=tokenizer,
+            seq_algo="zigzag_ring_attn_varlen",
+            sp_size=finetuning_args.sp_size,
+            rank=torch.distributed.get_rank(),
+            world_size=world_size,
+            device=torch.device("cuda", local_rank)
+        )
+    else:
+        data_collator = SeqParallelDataCollator(
+            tokenizer=tokenizer,
+            pad_to_multiple_of=data_args.cutoff_len if tokenizer.padding_side == "right" else None,
+            label_pad_token_id=IGNORE_INDEX if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id,
+            seq_algo=finetuning_args.parallel_mode,
+            sp_size=finetuning_args.sp_size,
+            rank=torch.distributed.get_rank(),
+            world_size=world_size,
+            device=torch.device("cuda", local_rank)
+        )
     # Override the decoding parameters of Seq2SeqTrainer
     training_args.generation_max_length = training_args.generation_max_length or data_args.cutoff_len
     training_args.generation_num_beams = data_args.eval_num_beams or training_args.generation_num_beams

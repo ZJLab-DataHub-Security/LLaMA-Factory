@@ -14,6 +14,7 @@ from .data_utils import merge_dataset
 from .parser import get_dataset_list
 from .preprocess import get_preprocess_and_print_func
 from .template import get_template_and_fix_tokenizer
+import torch.distributed as dist
 
 
 if TYPE_CHECKING:
@@ -142,19 +143,12 @@ def get_dataset(
     if data_args.tokenized_path is not None:
         if has_tokenized_data(data_args.tokenized_path):
             logger.warning("Loading dataset from disk will ignore other data arguments.")
+            if dist.get_rank() != 0:
+                dist.barrier()
             dataset = load_from_disk(data_args.tokenized_path)
-            # ---lsy---
-            to_remove = [col for col in dataset.column_names if col != "input_ids"]
-            # import copy
-            # first_item = copy.deepcopy(dataset[0]['input_ids'])
-            def update_column(example):
-                example['input_ids'] = example['input_ids'][:data_args.cutoff_len]
-                # example['input_ids'] = first_item[:data_args.cutoff_len]
-                return example
+            if dist.get_rank == 0:
+                dist.barrier()
 
-            # # 使用 map 方法添加新列
-            dataset = dataset.map(update_column,remove_columns=to_remove)
-            # ---lsy---
             logger.info("Loaded tokenized dataset from {}.".format(data_args.tokenized_path))
             if data_args.streaming:
                 dataset = dataset.to_iterable_dataset()

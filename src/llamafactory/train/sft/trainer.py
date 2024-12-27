@@ -13,9 +13,12 @@ from ..trainer_utils import create_custom_optimzer, create_custom_scheduler
 from torch.utils.data import DataLoader
 from transformers.utils import is_datasets_available
 from transformers.trainer_utils import seed_worker
+from transformers.training_args import OptimizerNames
 import datasets
+import torch.nn as nn
 from torch.nn import CrossEntropyLoss
-
+from transformers.utils import is_apex_available
+from torch.utils.data import SequentialSampler
 if TYPE_CHECKING:
     from transformers import ProcessorMixin
     from transformers.trainer import PredictionOutput
@@ -24,7 +27,8 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
-
+if is_apex_available():
+    from apex import amp
 
 class CustomSeq2SeqTrainer(Seq2SeqTrainer):
     r"""
@@ -136,6 +140,46 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
             writer.write("\n".join(res))
 
 class CustomSeqParallelTrainer(CustomSeq2SeqTrainer):
+    
+    # diff from base trainer: always passing `num_items_in_batch` to compute_loss function
+    def training_step(
+        self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], num_items_in_batch=None
+    ) -> torch.Tensor:
+
+        model.train()
+        if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
+            self.optimizer.train()
+
+        inputs = self._prepare_inputs(inputs)
+
+        with self.compute_loss_context_manager():
+            loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+
+        del inputs
+        if (
+            self.args.torch_empty_cache_steps is not None
+            and self.state.global_step % self.args.torch_empty_cache_steps == 0
+        ):
+            torch.cuda.empty_cache()
+
+        kwargs = {}
+
+        # For LOMO optimizers you need to explicitly use the learnign rate
+        if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+            kwargs["learning_rate"] = self._get_learning_rate()
+
+        if self.args.n_gpu > 1:
+            loss = loss.mean()  # mean() to average on multi-gpu parallel training
+
+        if self.use_apex:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            self.accelerator.backward(loss, **kwargs)
+            # Finally we need to normalize the loss for reporting
+            if num_items_in_batch is None:
+                return loss.detach() / self.args.gradient_accumulation_steps
+            return loss.detach()
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
@@ -144,13 +188,11 @@ class CustomSeqParallelTrainer(CustomSeq2SeqTrainer):
         Subclass and override for custom behavior.
         """
         from transformers.trainer import _is_peft_model, MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
-        if not hasattr(self, 'compute_loss_func'):
-            self.compute_loss_func = None
         if (self.label_smoother is not None or self.compute_loss_func is not None) and "labels" in inputs:
             labels = inputs.pop("labels")
         else:
             labels = None
-        if hasattr(self, 'model_accepts_loss_kwargs') and self.model_accepts_loss_kwargs:
+        if self.model_accepts_loss_kwargs:
             loss_kwargs = {}
             if num_items_in_batch is not None:
                 loss_kwargs["num_items_in_batch"] = num_items_in_batch
@@ -211,7 +253,7 @@ class CustomSeqParallelTrainer(CustomSeq2SeqTrainer):
                         loss[b]=loss_fn(shift_logits[b], shift_labels[b])/normalizer
                     loss = loss.mean()*sp_size
                 else:
-                    assert self.args.average_tokens_across_devices is True, "must ensure average_tokens_across_devices if parallel_mode is not data_parallel"
+                    assert self.args.average_tokens_across_devices is True, "please set average_tokens_across_devices=True if parallel_mode is not data_parallel"
                     loss_fn = CrossEntropyLoss(reduction='sum')
                     labels = inputs.pop("labels")
                     logits = outputs["logits"] if isinstance(outputs, dict) else outputs[1]
@@ -255,6 +297,7 @@ class CustomSeqParallelTrainer(CustomSeq2SeqTrainer):
 
         if not isinstance(train_dataset, torch.utils.data.IterableDataset):
             dataloader_params["sampler"] = self._get_train_sampler()
+            # dataloader_params["sampler"] = SequentialSampler(train_dataset)
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["worker_init_fn"] = seed_worker
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor

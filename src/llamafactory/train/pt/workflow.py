@@ -28,6 +28,7 @@ def run_pt(
     finetuning_args: "FinetuningArguments",
     callbacks: Optional[List["TrainerCallback"]] = None,
 ):
+    assert finetuning_args.parallel_mode != "zigzag_ring_attn_varlen", "zigzag_ring_attn_varlen is not recommanded for continued pre-training"
     tokenizer_module = load_tokenizer(model_args)
     tokenizer = tokenizer_module["tokenizer"]
     dataset = get_dataset(model_args, data_args, training_args, stage="pt", **tokenizer_module)
@@ -37,7 +38,7 @@ def run_pt(
     # data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     local_rank = int(os.getenv("LOCAL_RANK"))
     print(f"seq_len: {data_args.cutoff_len}")
-    
+
     data_collator = SeqParallelDataCollatorForLanguageModeling(
         tokenizer=tokenizer, 
         mlm=False,

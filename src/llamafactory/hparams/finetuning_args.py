@@ -312,9 +312,13 @@ class FinetuningArguments(FreezeArguments, LoraArguments, RLHFArguments, GaloreA
         default=False,
         metadata={"help": "Whether or not to save the training loss curves."},
     )
-    parallel_mode: Literal["zigzag_ring_attn", "dist_flash_attn", "ulysses_attn", "data_parallel"] = field(
+    parallel_mode: Literal["zigzag_ring_attn", "zigzag_ring_attn_varlen", "dist_flash_attn", "ulysses_attn", "data_parallel"] = field(
         default="data_parallel",
         metadata={"help": "which sequence parallel mode to use."},
+    )
+    record_ppl: bool = field(
+        default=False,
+        metadata={"help": "whether to record the perplexity. Can only be used when learning rate is 0."},
     )
     sp_size: int = field(
         default=-1,

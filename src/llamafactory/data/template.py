@@ -378,7 +378,8 @@ def get_template_and_fix_tokenizer(
             logger.warning("New tokens have been added, make sure `resize_vocab` is True.")
 
     try:
-        tokenizer.chat_template = _get_jinja_template(template, tokenizer)
+        chat_template = _get_jinja_template(template, tokenizer)
+        tokenizer.pad_token = tokenizer.eos_token
     except ValueError:
         logger.info("Cannot add this chat template to tokenizer.")
 

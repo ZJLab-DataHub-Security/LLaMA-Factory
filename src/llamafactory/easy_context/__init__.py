@@ -240,7 +240,6 @@ def causal_model_forward(
     hidden_states = outputs[0]
     # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
     logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
-
     loss = None
     if labels is not None:
         loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
@@ -257,6 +256,24 @@ def causal_model_forward(
         attentions=outputs.attentions,
     )
 
+def ForSequenceParallelCausalLMLoss(
+    self, logits, labels, vocab_size: int, num_items_in_batch: int = None, ignore_index: int = -100, **kwargs
+):
+    from transformers.loss.loss_utils import fixed_cross_entropy
+    # Upcast to float if we need to compute the loss to avoid potential precision issues
+    logits = logits.float()
+    # Shift so that tokens < n predict n
+    logits = logits.contiguous()
+    labels = labels.contiguous()
+
+    # Flatten the tokens
+    logits = logits.view(-1, vocab_size)
+    labels = labels.view(-1)
+    # Enable model parallelism
+    labels = labels.to(logits.device)
+    loss = fixed_cross_entropy(logits, labels, num_items_in_batch, ignore_index, **kwargs)
+    return loss
+
 def apply_default_monkey_patch_llama():
     # we rewrite this function because we need to pass `flash_attn_kwargs` to model forward function and pass `num_items_in_batch` to loss_function simultaneously, but there are conflicts in transformers-4.47.0
     # and we also need allow using flash_attn_kwargs whether gradient_checkpointing is True or False which is only allowed when gradient_checkpointing is False in transformers-4.47.0,
@@ -264,11 +281,18 @@ def apply_default_monkey_patch_llama():
     transformers.models.llama.modeling_llama.LlamaModel.forward=model_forward
 
 def apply_seq_parallel_monkey_patch(
-    seq_algo, model, sp_size=None, enable_offload=False, offload_percent=0.
+    args, model
 ):
+    assert args is not None
+    seq_algo = args.parallel_mode
+    sp_size = args.sp_size
+    enable_offload = args.sp_enable_offload
+    offload_percent = args.sp_offload_percent
     assert seq_algo in ["zigzag_ring_attn", "zigzag_ring_attn_varlen", "dist_flash_attn", "ulysses_attn", "data_parallel"], f"Invalid seq_algo: {seq_algo}"
     assert model in ["llama", "mistral"], f"Invalid model: {model}"
     apply_default_monkey_patch_llama()
+    if args.enable_dynamic_sp:
+        transformers.models.llama.modeling_llama.LlamaForCausalLM.loss_function = ForSequenceParallelCausalLMLoss
     if seq_algo == "data_parallel":
         return
     elif seq_algo == "zigzag_ring_attn" and model == "llama":
@@ -287,3 +311,12 @@ def prepare_dataloader(seq_algo, dataloader, acclerator):
         return acclerator.prepare(dataloader)
     else:
         return dataloader
+
+def prepare_dynamic_sp(seq_algo, sp_size, model):
+    if seq_algo == "zigzag_ring_attn":
+        apply_zigzag_ring_attn_monkey_patch_llama(sp_size)
+    elif seq_algo == "dist_flash_attn":
+        from .dist_flash_attn.async_communication import reset_sequence_parallel
+        reset_sequence_parallel(sp_size)
+    elif seq_algo == "ulysses_attn":
+        apply_ulysses_attn_monkey_patch_llama(sp_size)

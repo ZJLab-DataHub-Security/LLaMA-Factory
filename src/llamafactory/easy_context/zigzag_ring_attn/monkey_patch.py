@@ -7,6 +7,8 @@ from ring_flash_attn.zigzag_ring_flash_attn import zigzag_ring_flash_attn_func
 from ring_flash_attn.zigzag_ring_flash_attn_varlen import zigzag_ring_flash_attn_varlen_func
 from functools import partial
 
+SP_GROUPS = {}
+
 def new_flash_attn_forward(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
@@ -152,9 +154,11 @@ def new_decoder_forward(
 def get_sp_process_group(sequence_parallel_size=None):
     if sequence_parallel_size is None:
         return None
+    global SP_GROUPS
     assert torch.distributed.is_initialized()
+    if sequence_parallel_size in SP_GROUPS:
+        return SP_GROUPS[sequence_parallel_size]
     world_size: int = torch.distributed.get_world_size()
-    print(f"sequence_parallel_size is {sequence_parallel_size}, world_size is {world_size}")
     if sequence_parallel_size is None or sequence_parallel_size == -1:
         sequence_parallel_size = world_size
     else:
@@ -166,6 +170,7 @@ def get_sp_process_group(sequence_parallel_size=None):
         ranks = range(i * sequence_parallel_size, (i + 1) * sequence_parallel_size)
         if rank in ranks:
             group = torch.distributed.new_group(ranks)
+            SP_GROUPS[sequence_parallel_size] = group
             return group
 
 def apply_zigzag_ring_attn_monkey_patch_llama(sp_size=None):

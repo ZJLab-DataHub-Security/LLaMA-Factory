@@ -334,6 +334,18 @@ class FinetuningArguments(FreezeArguments, LoraArguments, RLHFArguments, GaloreA
         default=0.0,
         metadata={"help": "0 for remain all activation memory in gpu, 1 for offload all activation memory in cpu"}
     )
+    enable_dynamic_sp: bool = field(
+        default=False,
+        metadata={"help": "when enable, disable sp_size and enable seqlen_per_gpu"},
+    )
+    seqlen_per_gpu: int = field(
+        default=4096,
+        metadata={"help": "in dynamic sp mode, seqlen per gpu is fixed and dp/sp size is adjust with the input seqlen"},
+    )
+    total_batch_size: int = field(
+        default=128,
+        metadata={"help": "this param takes effect when enable_dynamic_sp==True, total_batch_size=mini_batch_size*gradient_accumulation*dp_size. in dynamic sp mode, dp_size is not fixed while total_batch_size should be fixed"}
+    )
 
     def __post_init__(self):
         def split_arg(arg):

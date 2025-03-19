@@ -344,7 +344,15 @@ class FinetuningArguments(FreezeArguments, LoraArguments, RLHFArguments, GaloreA
     )
     total_batch_size: int = field(
         default=128,
-        metadata={"help": "this param takes effect when enable_dynamic_sp==True, total_batch_size=mini_batch_size*gradient_accumulation*dp_size. in dynamic sp mode, dp_size is not fixed while total_batch_size should be fixed"}
+        metadata={"help": "this param takes effect when enable_dynamic_sp==True, total_batch_size=mini_batch_size*gradient_accumulation*dp_size. in dynamic sp mode, dp_size is not fixed while total_batch_size should be fixed"},
+    )
+    use_megatron: bool = field(
+        default=False,
+        metadata={"help": ""},
+    )
+    megatron_cfg_path: str = field(
+        default='megatron_conf/megatron_llama_config.yaml',
+        metadata={"help": ""},
     )
 
     def __post_init__(self):

@@ -8,11 +8,7 @@ from ..extras.callbacks import LogCallback
 from ..extras.logging import get_logger
 from ..hparams import get_infer_args, get_train_args
 from ..model import load_model, load_tokenizer
-from .dpo import run_dpo
-from .kto import run_kto
-from .ppo import run_ppo
 from .pt import run_pt
-from .rm import run_rm
 from .sft import run_sft
 
 
@@ -30,14 +26,21 @@ def run_exp(args: Optional[Dict[str, Any]] = None, callbacks: List["TrainerCallb
     if finetuning_args.stage == "pt":
         run_pt(model_args, data_args, training_args, finetuning_args, callbacks)
     elif finetuning_args.stage == "sft":
+        if finetuning_args.use_megatron:
+            from .sft.experiment import run_sft_exp
+            run_sft_exp(model_args, data_args, training_args, finetuning_args)
         run_sft(model_args, data_args, training_args, finetuning_args, generating_args, callbacks)
     elif finetuning_args.stage == "rm":
+        from .rm import run_rm
         run_rm(model_args, data_args, training_args, finetuning_args, callbacks)
     elif finetuning_args.stage == "ppo":
+        from .ppo import run_ppo
         run_ppo(model_args, data_args, training_args, finetuning_args, generating_args, callbacks)
     elif finetuning_args.stage == "dpo":
+        from .dpo import run_dpo
         run_dpo(model_args, data_args, training_args, finetuning_args, callbacks)
     elif finetuning_args.stage == "kto":
+        from .kto import run_kto
         run_kto(model_args, data_args, training_args, finetuning_args, callbacks)
     else:
         raise ValueError("Unknown task.")

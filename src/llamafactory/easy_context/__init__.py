@@ -3,8 +3,6 @@ from .dist_flash_attn.monkey_patch import apply_dist_flash_attn_monkey_patch_lla
 from .zigzag_ring_attn.prepare_inputs import prepare_zigzag_ring_attn_inputs, prepare_zigzag_ring_attn_sft_inputs, prepare_zigzag_ring_attn_varlen_sft_inputs
 from .zigzag_ring_attn.monkey_patch import apply_zigzag_ring_attn_monkey_patch_llama, apply_zigzag_ring_attn_varlen_monkey_patch_llama
 from .unsloth_offloaded_gradient_checkpoint.monkey_patch import apply_unsloth_offloaded_gradient_checkpoint_monkey_patch
-from .ulysses_attn.prepare_inputs import prepare_ulysses_attn_inputs, prepare_ulysses_attn_sft_inputs
-from .ulysses_attn.monkey_patch import apply_ulysses_attn_monkey_patch_llama 
 import torch
 import torch.nn.functional as F
 import transformers
@@ -24,6 +22,7 @@ def prepare_seq_parallel_inputs(
             input_ids, position_ids, target_ids, rank, world_size, device
         )
     elif seq_algo == "ulysses_attn":
+        from .ulysses_attn.prepare_inputs import prepare_ulysses_attn_inputs
         return prepare_ulysses_attn_inputs(
             input_ids, position_ids, target_ids, rank, world_size, device
         )
@@ -57,6 +56,7 @@ def prepare_seq_parallel_sft_inputs(
             input_ids, attention_mask, position_ids, shift_labels, rank, world_size, device
         )
     elif seq_algo == "ulysses_attn":
+        from .ulysses_attn.prepare_inputs import prepare_ulysses_attn_sft_inputs
         return prepare_ulysses_attn_sft_inputs(
             input_ids, attention_mask, position_ids, shift_labels, rank, world_size, device
         )
@@ -302,6 +302,7 @@ def apply_seq_parallel_monkey_patch(
     elif seq_algo == "dist_flash_attn" and model == "llama":
         apply_dist_flash_attn_monkey_patch_llama(sp_size=sp_size, enable_offload=enable_offload, offload_percent=offload_percent)
     elif seq_algo == "ulysses_attn" and model == "llama":
+        from .ulysses_attn.monkey_patch import apply_ulysses_attn_monkey_patch_llama 
         apply_ulysses_attn_monkey_patch_llama(sp_size=sp_size)
     else:
         raise ValueError(f"Invalid seq_algo: {seq_algo} or model: {model}")
@@ -319,4 +320,5 @@ def prepare_dynamic_sp(seq_algo, sp_size, model):
         from .dist_flash_attn.async_communication import reset_sequence_parallel
         reset_sequence_parallel(sp_size)
     elif seq_algo == "ulysses_attn":
+        from .ulysses_attn.monkey_patch import apply_ulysses_attn_monkey_patch_llama 
         apply_ulysses_attn_monkey_patch_llama(sp_size)

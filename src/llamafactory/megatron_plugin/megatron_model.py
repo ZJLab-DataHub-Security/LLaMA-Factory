@@ -1,7 +1,7 @@
 from ..extras.logging import get_logger
 from ..data import split_dataset
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Union, Callable, Any
 from dataclasses import dataclass
 import itertools
 import torch
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from ..hparams import DataArguments
 
 logging = get_logger(__name__)
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 ## copied from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model
 class MegatronModel(MegatronGPTSFTModel):
@@ -77,6 +78,8 @@ class MegatronModel(MegatronGPTSFTModel):
                 consumed_samples=consumed_samples,
                 mode='train'
             )
+            if self.trainer.max_steps <= 0 or self.trainer.max_steps == None:
+                self.trainer.fit_loop.epoch_loop.max_steps = len(self._train_ds) // self._training_args.per_device_train_batch_size // parallel_state.get_data_parallel_world_size() // self._training_args.gradient_accumulation_steps
 
     def setup_eval_dataloader(self):
         self._validation_dl = self.build_data_loader(
@@ -306,6 +309,22 @@ class MegatronModel(MegatronGPTSFTModel):
             micro_batch_size=self._training_args.per_device_eval_batch_size,
             data_parallel_size=parallel_state.get_data_parallel_world_size(),
         )
+
+    def compute_consumed_samples(self, steps_since_resume=0):
+        app_state = AppState()
+        consumed_samples = (
+            self.init_consumed_samples
+            + steps_since_resume
+            * app_state.data_parallel_size
+            * self._training_args.per_device_train_batch_size
+            * self._training_args.gradient_accumulation_steps
+        )
+        return int(consumed_samples)
+
+    def on_train_batch_end(self, outputs, dataloader_iter: Any, batch_idx: int, unused: Optional[int] = 0) -> None:
+        super().on_train_batch_end(outputs, dataloader_iter, batch_idx)
+        if self.global_rank == 0:
+            print("")
 
     def on_validation_epoch_end(self):
         # TODO: this method should be modularized. It is too long and does too many things. (@adithyare)

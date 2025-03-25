@@ -29,7 +29,8 @@ def run_exp(args: Optional[Dict[str, Any]] = None, callbacks: List["TrainerCallb
         if finetuning_args.use_megatron:
             from .sft.experiment import run_sft_exp
             run_sft_exp(model_args, data_args, training_args, finetuning_args)
-        run_sft(model_args, data_args, training_args, finetuning_args, generating_args, callbacks)
+        else:
+            run_sft(model_args, data_args, training_args, finetuning_args, generating_args, callbacks)
     elif finetuning_args.stage == "rm":
         from .rm import run_rm
         run_rm(model_args, data_args, training_args, finetuning_args, callbacks)
